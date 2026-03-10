@@ -20,13 +20,34 @@ Things that should already be right. Fix before anything else.
 Get people hooked. Empower early adopters, give them reasons to spread
 the word.
 
-| # | Item | Rationale |
-|---|------|-----------|
-| 1.1 | `compile_commands.json` | Every clangd/LSP user expects this. Without it, editor experience is broken. Fastest path to "wow this just works" |
-| 1.2 | `now init` scaffolding | `now init` → edit → `now build` in 30 seconds. Removes all friction from first experience |
-| 1.3 | `now fmt` (Pasta formatter) | Tinkerers share projects, consistent formatting matters. Signals maturity |
-| 1.4 | C++20 modules (pre-scan) | The C++ crowd is hungry for a build tool that handles modules without CMake pain |
-| 1.5 | Additional languages | Rust FFI, mixed C/C++ with Go — tinkerers love polyglot projects |
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1.1 | `compile_commands.json` | DONE | `now compile-db` generates arguments-form JSON |
+| 1.2 | `now init` scaffolding | TODO | `now init` → edit → `now build` in 30 seconds |
+| 1.3 | `now fmt` (Pasta formatter) | TODO | Trivial with `PASTA_SORTED` + `PASTA_PRETTY` from Pasta v0.2 |
+| 1.4 | C++20 modules (pre-scan) | TODO | The CMake pain-killer |
+| 1.5 | Additional languages | TODO | Rust FFI, mixed C/C++ with Go |
+
+---
+
+## Pasta Ecosystem Integration
+
+New libraries from the Pasta team unlock significant simplification and
+new capabilities across `now`.
+
+| # | Item | Library | Status | Impact |
+|---|------|---------|--------|--------|
+| P.1 | Update pasta submodule to v0.2 | pasta | TODO | `PASTA_LABEL`, `PASTA_SORTED`, section references |
+| P.2 | Wire alforno into layer system | alforno | TODO | Replace hand-rolled `now_layer.c` merge with `alf_create(ALF_AGGREGATE)` pipeline |
+| P.3 | `now fmt` via pasta write | pasta | TODO | Parse → write with `PASTA_PRETTY \| PASTA_SORTED` — near one-liner |
+| P.4 | Basta package format | basta | TODO | Single-file packages with embedded binaries, replace tar.gz + sidecar |
+| P.5 | Alforno for `now init` templates | alforno | TODO | Parameterized project scaffolding via `@vars` + `conflate` |
+
+### Pasta ecosystem repos
+
+- **Pasta** — serialization format, MIT. `PASTA_LABEL`, `PASTA_SORTED`, section refs. [github.com/IridiumFX/Pasta](https://github.com/IridiumFX/Pasta)
+- **Basta** — Pasta + binary blobs (`BASTA_BLOB`: 0x00 sentinel + u64be length + raw bytes). [github.com/IridiumFX/basta](https://github.com/IridiumFX/basta)
+- **Alforno** — Pasta processor. Three-pass pipeline (parameterize → merge → link). Aggregate and conflate operations. `@vars` substitution, section linking. [github.com/IridiumFX/alforno](https://github.com/IridiumFX/alforno)
 
 ---
 
@@ -74,13 +95,19 @@ No urgency. Build when the moment is right or community asks.
 
 ---
 
-## Recommended First Sprint
+## Self-hosting Milestone
+
+`now` builds itself from `now.pasta` using a bootstrap binary.
+27 source files, 4-way parallel, ~6s clean / ~700ms incremental.
+Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
+
+---
+
+## Current Sprint
 
 ```
-Tier 0.1  →  Tier 1.1  →  Tier 1.2  →  Tier 2.1
-   h/c         compile       now init     native
- cleanup      commands                    Ed25519
+1.2 (now init)  →  1.3 (now fmt)  →  P.1-P.2 (alforno)  →  1.4 (C++20)
 ```
 
-Fix hygiene first, then unlock the tinkerer experience, then harden
-the foundation before more people depend on it.
+Self-hosting is done. Next: remove friction from first experience,
+then leverage the Pasta ecosystem to simplify internals.

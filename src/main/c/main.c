@@ -14,6 +14,7 @@
 
 #include "now_pom.h"
 #include "now.h"
+#include "now_build.h"
 #include "now_fs.h"
 #include "now_procure.h"
 #include "now_package.h"
@@ -54,6 +55,8 @@ static void usage(void) {
         "  procure    Resolve and download dependencies\n"
         "  package    Assemble distributable archive in target/pkg/\n"
         "  install    Install to local repo (~/.now/repo/)\n"
+        "  init       Scaffold a new project: init [lang] [--group G] [--artifact A]\n"
+        "  fmt        Format .pasta files: fmt [file...] [--sorted]\n"
         "  publish    Upload package to remote registry\n"
         "  yank       Yank a published version: yank <g:a:v> --repo URL\n"
         "  compile-db   Generate compile_commands.json for IDE/LSP\n"
@@ -167,6 +170,304 @@ int main(int argc, char *argv[]) {
             rmdir_recursive(target);
         }
         free(target);
+        return 0;
+    }
+
+    /* ---- now fmt ---- */
+    if (strcmp(phase, "fmt") == 0) {
+        /* Format one or more .pasta files in-place */
+        int fmt_count = 0;
+        int fmt_flags = PASTA_PRETTY;
+        int sorted = 0;
+
+        /* Collect file arguments and flags */
+        const char *files[64];
+        int nfiles = 0;
+        for (int i = 2; i < argc && nfiles < 64; i++) {
+            if (strcmp(argv[i], "--sorted") == 0)
+                sorted = 1;
+            else if (argv[i][0] != '-')
+                files[nfiles++] = argv[i];
+        }
+        if (sorted) fmt_flags |= PASTA_SORTED;
+
+        /* Default: format now.pasta in current directory */
+        char cwd_buf[512];
+        char *default_file = NULL;
+        if (nfiles == 0) {
+            if (getcwd_compat(cwd_buf, sizeof(cwd_buf))) {
+                default_file = now_path_join(cwd_buf, "now.pasta");
+                if (default_file && now_path_exists(default_file)) {
+                    files[0] = default_file;
+                    nfiles = 1;
+                } else {
+                    fprintf(stderr, "error: no now.pasta found\n");
+                    free(default_file);
+                    return 1;
+                }
+            }
+        }
+
+        for (int i = 0; i < nfiles; i++) {
+            /* Read file */
+            FILE *f = fopen(files[i], "rb");
+            if (!f) {
+                fprintf(stderr, "error: cannot open %s\n", files[i]);
+                continue;
+            }
+            fseek(f, 0, SEEK_END);
+            long flen = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            char *content = malloc((size_t)flen + 1);
+            if (!content) { fclose(f); continue; }
+            fread(content, 1, (size_t)flen, f);
+            content[flen] = '\0';
+            fclose(f);
+
+            /* Parse */
+            PastaResult pr;
+            PastaValue *val = pasta_parse(content, (size_t)flen, &pr);
+            free(content);
+            if (!val) {
+                fprintf(stderr, "%s:%d:%d: %s\n",
+                        files[i], pr.line, pr.col, pr.message);
+                continue;
+            }
+
+            /* Write back formatted */
+            int write_flags = fmt_flags;
+            if (pr.sections) write_flags |= PASTA_SECTIONS;
+            char *formatted = pasta_write(val, write_flags);
+            pasta_free(val);
+            if (!formatted) {
+                fprintf(stderr, "error: failed to format %s\n", files[i]);
+                continue;
+            }
+
+            f = fopen(files[i], "w");
+            if (f) {
+                fputs(formatted, f);
+                fclose(f);
+                fmt_count++;
+                if (verbose) printf("  formatted %s\n", files[i]);
+            }
+            free(formatted);
+        }
+
+        free(default_file);
+        printf("formatted %d file(s)\n", fmt_count);
+        return 0;
+    }
+
+    /* ---- now init / now sketch ---- */
+    if (strcmp(phase, "init") == 0 || strcmp(phase, "sketch") == 0) {
+        char cwd[512];
+        if (!getcwd_compat(cwd, sizeof(cwd))) {
+            fprintf(stderr, "error: cannot determine working directory\n");
+            return 1;
+        }
+
+        /* Parse init-specific flags */
+        const char *lang  = "c";
+        const char *group = "com.example";
+        const char *art   = NULL;
+        const char *type  = "executable";
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--lang") == 0 && i + 1 < argc)
+                lang = argv[++i];
+            else if (strcmp(argv[i], "--group") == 0 && i + 1 < argc)
+                group = argv[++i];
+            else if (strcmp(argv[i], "--artifact") == 0 && i + 1 < argc)
+                art = argv[++i];
+            else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc)
+                type = argv[++i];
+            else if (argv[i][0] != '-')
+                lang = argv[i];  /* positional: language */
+        }
+
+        /* Derive artifact from directory name if not specified */
+        char art_buf[128];
+        if (!art) {
+            const char *dir_name = strrchr(cwd, '/');
+            if (!dir_name) dir_name = strrchr(cwd, '\\');
+            if (dir_name) dir_name++;
+            else dir_name = "myproject";
+            strncpy(art_buf, dir_name, sizeof(art_buf) - 1);
+            art_buf[sizeof(art_buf) - 1] = '\0';
+            /* Sanitize: lowercase, replace spaces/dots with hyphens */
+            for (char *p = art_buf; *p; p++) {
+                if (*p >= 'A' && *p <= 'Z') *p += 32;
+                if (*p == ' ' || *p == '.') *p = '-';
+            }
+            art = art_buf;
+        }
+
+        /* Determine source directories based on language */
+        const char *src_dir = "src/main/c";
+        const char *hdr_dir = "src/main/h";
+        const char *tst_dir = "src/test/c";
+        const char *src_ext = ".c";
+        const char *std_str = "c11";
+        if (strcmp(lang, "c++") == 0 || strcmp(lang, "cpp") == 0) {
+            src_dir = "src/main/cpp";
+            hdr_dir = "src/main/h";
+            tst_dir = "src/test/cpp";
+            src_ext = ".cpp";
+            std_str = "c++17";
+            lang = "c++";
+        }
+
+        /* Check if now.pasta already exists */
+        char *pasta_path = now_path_join(cwd, "now.pasta");
+        if (now_path_exists(pasta_path)) {
+            fprintf(stderr, "now.pasta already exists — skipping\n");
+        } else {
+            /* Write now.pasta */
+            FILE *f = fopen(pasta_path, "w");
+            if (!f) {
+                fprintf(stderr, "error: cannot write %s\n", pasta_path);
+                free(pasta_path);
+                return 1;
+            }
+            fprintf(f,
+                "; Generated by: now init %s\n"
+                "; Edit this file to configure your project.\n"
+                "{\n"
+                "  group:    \"%s\",\n"
+                "  artifact: \"%s\",\n"
+                "  version:  \"0.1.0\",\n"
+                "\n"
+                "  langs: [\"%s\"],\n"
+                "  std:   \"%s\",\n"
+                "\n"
+                "  output: { type: \"%s\", name: \"%s\" },\n"
+                "\n"
+                "  compile: {\n"
+                "    warnings: [\"Wall\", \"Wextra\"]\n"
+                "  },\n"
+                "\n"
+                "  deps: []\n"
+                "}\n",
+                lang, group, art, lang, std_str, type, art);
+            fclose(f);
+            printf("  created now.pasta\n");
+        }
+        free(pasta_path);
+
+        /* Create directories */
+        char *dirs[] = { NULL, NULL, NULL, NULL };
+        dirs[0] = now_path_join(cwd, src_dir);
+        dirs[1] = now_path_join(cwd, hdr_dir);
+        dirs[2] = now_path_join(cwd, tst_dir);
+        for (int i = 0; dirs[i]; i++) {
+            if (!now_path_exists(dirs[i])) {
+                now_mkdir_p(dirs[i]);
+                printf("  created %s/\n", dirs[i] + strlen(cwd) + 1);
+            }
+            free(dirs[i]);
+        }
+
+        /* Write placeholder main source if empty */
+        char main_name[64];
+        snprintf(main_name, sizeof(main_name), "main%s", src_ext);
+        char *main_rel = now_path_join(src_dir, main_name);
+        char *main_path = now_path_join(cwd, main_rel);
+        if (!now_path_exists(main_path)) {
+            FILE *f = fopen(main_path, "w");
+            if (f) {
+                if (strcmp(lang, "c++") == 0) {
+                    fprintf(f,
+                        "#include <iostream>\n\n"
+                        "int main() {\n"
+                        "    std::cout << \"hello from %s\" << std::endl;\n"
+                        "    return 0;\n"
+                        "}\n", art);
+                } else {
+                    fprintf(f,
+                        "#include <stdio.h>\n\n"
+                        "int main(void) {\n"
+                        "    printf(\"hello from %s\\n\");\n"
+                        "    return 0;\n"
+                        "}\n", art);
+                }
+                fclose(f);
+                printf("  created %s\n", main_rel);
+            }
+        }
+        free(main_path);
+        free(main_rel);
+
+        /* Write placeholder header */
+        char hdr_name[128];
+        snprintf(hdr_name, sizeof(hdr_name), "%s.h", art);
+        char *hdr_rel = now_path_join(hdr_dir, hdr_name);
+        char *hdr_path = now_path_join(cwd, hdr_rel);
+        if (!now_path_exists(hdr_path)) {
+            FILE *f = fopen(hdr_path, "w");
+            if (f) {
+                /* Generate include guard from artifact name */
+                char guard[128];
+                snprintf(guard, sizeof(guard), "%s_H", art);
+                for (char *p = guard; *p; p++) {
+                    if (*p >= 'a' && *p <= 'z') *p -= 32;
+                    if (*p == '-' || *p == '.') *p = '_';
+                }
+                fprintf(f,
+                    "#ifndef %s\n"
+                    "#define %s\n\n"
+                    "/* %s public API */\n\n"
+                    "#endif /* %s */\n",
+                    guard, guard, art, guard);
+                fclose(f);
+                printf("  created %s\n", hdr_rel);
+            }
+        }
+        free(hdr_path);
+        free(hdr_rel);
+
+        /* Write placeholder test */
+        char tst_name[64];
+        snprintf(tst_name, sizeof(tst_name), "main_test%s", src_ext);
+        char *tst_rel = now_path_join(tst_dir, tst_name);
+        char *tst_path = now_path_join(cwd, tst_rel);
+        if (!now_path_exists(tst_path)) {
+            FILE *f = fopen(tst_path, "w");
+            if (f) {
+                if (strcmp(lang, "c++") == 0) {
+                    fprintf(f,
+                        "#include <cassert>\n\n"
+                        "int main() {\n"
+                        "    assert(1 == 1);\n"
+                        "    return 0;\n"
+                        "}\n");
+                } else {
+                    fprintf(f,
+                        "#include <assert.h>\n\n"
+                        "int main(void) {\n"
+                        "    assert(1 == 1);\n"
+                        "    return 0;\n"
+                        "}\n");
+                }
+                fclose(f);
+                printf("  created %s\n", tst_rel);
+            }
+        }
+        free(tst_path);
+        free(tst_rel);
+
+        /* Write .gitignore if absent */
+        char *gi_path = now_path_join(cwd, ".gitignore");
+        if (!now_path_exists(gi_path)) {
+            FILE *f = fopen(gi_path, "w");
+            if (f) {
+                fprintf(f, "target/\n");
+                fclose(f);
+                printf("  created .gitignore\n");
+            }
+        }
+        free(gi_path);
+
+        printf("\nready — run 'now build' to compile\n");
         return 0;
     }
 
