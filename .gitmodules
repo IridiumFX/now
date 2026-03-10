@@ -7,3 +7,9 @@
 [submodule "lib/mbedtls"]
 	path = lib/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "lib/basta"]
+	path = lib/basta
+	url = https://github.com/IridiumFX/Basta.git
+[submodule "lib/alforno"]
+	path = lib/alforno
+	url = https://github.com/IridiumFX/alforno.git
