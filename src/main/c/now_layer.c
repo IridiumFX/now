@@ -6,6 +6,7 @@
 #include "now_layer.h"
 #include "now_fs.h"
 #include "pasta.h"
+#include "alforno_internal.h"  /* alf_value_clone, alf_map_merge */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -511,32 +512,8 @@ NOW_API void now_layer_merge_strarray(NowStrArray *dst,
     }
 }
 
-/* Deep-clone a PastaValue. Caller owns the result. */
-static PastaValue *pasta_clone(const PastaValue *v) {
-    if (!v) return NULL;
-    switch (pasta_type(v)) {
-        case PASTA_STRING: return pasta_new_string(pasta_get_string(v));
-        case PASTA_BOOL:   return pasta_new_bool(pasta_get_bool(v));
-        case PASTA_NUMBER: return pasta_new_number(pasta_get_number(v));
-        case PASTA_ARRAY: {
-            PastaValue *a = pasta_new_array();
-            size_t n = pasta_count(v);
-            for (size_t i = 0; i < n; i++)
-                pasta_push(a, pasta_clone(pasta_array_get(v, i)));
-            return a;
-        }
-        case PASTA_MAP: {
-            PastaValue *m = pasta_new_map();
-            size_t n = pasta_count(v);
-            for (size_t i = 0; i < n; i++) {
-                const char *k = pasta_map_key(v, i);
-                if (k) pasta_set(m, k, pasta_clone(pasta_map_value(v, i)));
-            }
-            return m;
-        }
-        default: return NULL;
-    }
-}
+/* Deep-clone via alforno's utility (handles all types incl. labels) */
+#define pasta_clone alf_value_clone
 
 /* Check if a key exists in a map */
 static int pasta_map_has(const PastaValue *map, const char *key) {
@@ -652,11 +629,16 @@ static PastaValue *merge_pasta_maps(const PastaValue *base,
                 }
                 pasta_set(result, bk, merged);
             } else if (pasta_type(oval) == PASTA_MAP) {
-                /* Recursive merge for nested maps */
-                PastaValue *sub = merge_pasta_maps(bval, oval, policy,
-                    section_name, base_layer_id, overlay_layer_id,
-                    override_reason, audit);
-                pasta_set(result, bk, sub);
+                if (policy == NOW_POLICY_OPEN) {
+                    /* Delegate to alforno for open-policy map merge */
+                    pasta_set(result, bk, alf_map_merge(bval, oval));
+                } else {
+                    /* Recursive merge for locked policy (audit violations) */
+                    PastaValue *sub = merge_pasta_maps(bval, oval, policy,
+                        section_name, base_layer_id, overlay_layer_id,
+                        override_reason, audit);
+                    pasta_set(result, bk, sub);
+                }
             } else {
                 /* Scalar: overlay wins */
                 pasta_set(result, bk, pasta_clone(oval));

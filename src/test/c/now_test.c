@@ -23,6 +23,7 @@
 #include "now_repro.h"
 #include "now_advisory.h"
 #include "now_auth.h"
+#include "alforno.h"
 #include "pico_http.h"
 #include "pico_ws.h"
 
@@ -52,6 +53,8 @@ static int tests_failed = 0;
     } while (0)
 #define ASSERT_NOT_NULL(ptr) \
     do { if (!(ptr)) { FAIL(#ptr " is NULL"); return; } } while (0)
+#define ASSERT_NULL(ptr) \
+    do { if ((ptr)) { FAIL(#ptr " is not NULL"); return; } } while (0)
 
 /* ---- Version ---- */
 
@@ -1899,6 +1902,130 @@ static void test_layer_push_project(void) {
     PASS();
 }
 
+/* ---- Alforno integration ---- */
+
+static void test_alforno_aggregate_merge(void) {
+    TEST("alforno: aggregate merges two pastlets");
+    AlfContext *ctx = alf_create(ALF_AGGREGATE, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    const char *input1 = "@db {\n  engine: \"postgres\",\n  pool: 10\n}\n";
+    const char *input2 = "@db {\n  pool: 20,\n  timeout: 30\n}\n@cache {\n  ttl: 60\n}\n";
+
+    AlfResult ar;
+    ASSERT_EQ(alf_add_input(ctx, input1, strlen(input1), &ar), 0);
+    ASSERT_EQ(alf_add_input(ctx, input2, strlen(input2), &ar), 0);
+
+    PastaValue *out = alf_process(ctx, &ar);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ((int)ar.code, ALF_OK);
+
+    /* @db should have pool=20 (overlay wins), engine preserved, timeout added */
+    const PastaValue *db = pasta_map_get(out, "db");
+    ASSERT_NOT_NULL(db);
+    ASSERT_EQ((int)pasta_get_number(pasta_map_get(db, "pool")), 20);
+    ASSERT_STR(pasta_get_string(pasta_map_get(db, "engine")), "postgres");
+    ASSERT_EQ((int)pasta_get_number(pasta_map_get(db, "timeout")), 30);
+
+    /* @cache should be present */
+    const PastaValue *cache = pasta_map_get(out, "cache");
+    ASSERT_NOT_NULL(cache);
+    ASSERT_EQ((int)pasta_get_number(pasta_map_get(cache, "ttl")), 60);
+
+    pasta_free(out);
+    alf_free(ctx);
+    PASS();
+}
+
+static void test_alforno_parameterize(void) {
+    TEST("alforno: @vars substitution");
+    AlfContext *ctx = alf_create(ALF_AGGREGATE, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    const char *input =
+        "@vars {\n  name: \"myapp\",\n  version: \"1.0\"\n}\n"
+        "@project {\n  artifact: \"{name}\",\n  ver: \"{version}\"\n}\n";
+
+    AlfResult ar;
+    ASSERT_EQ(alf_add_input(ctx, input, strlen(input), &ar), 0);
+
+    PastaValue *out = alf_process(ctx, &ar);
+    ASSERT_NOT_NULL(out);
+
+    /* @vars should be consumed (not in output) */
+    ASSERT_NULL(pasta_map_get(out, "vars"));
+
+    /* @project should have substituted values */
+    const PastaValue *proj = pasta_map_get(out, "project");
+    ASSERT_NOT_NULL(proj);
+    ASSERT_STR(pasta_get_string(pasta_map_get(proj, "artifact")), "myapp");
+    ASSERT_STR(pasta_get_string(pasta_map_get(proj, "ver")), "1.0");
+
+    pasta_free(out);
+    alf_free(ctx);
+    PASS();
+}
+
+static void test_alforno_conflate(void) {
+    TEST("alforno: conflate filters to recipe fields");
+    AlfContext *ctx = alf_create(ALF_CONFLATE, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    const char *recipe =
+        "@output {\n  consumes: [\"settings\"],\n  theme: \"allowed\"\n}\n";
+    const char *input =
+        "@settings {\n  theme: \"dark\",\n  secret: \"hunter2\"\n}\n";
+
+    AlfResult ar;
+    ASSERT_EQ(alf_set_recipe(ctx, recipe, strlen(recipe), &ar), 0);
+    ASSERT_EQ(alf_add_input(ctx, input, strlen(input), &ar), 0);
+
+    PastaValue *out = alf_process(ctx, &ar);
+    ASSERT_NOT_NULL(out);
+
+    /* @output should have theme but NOT secret */
+    const PastaValue *o = pasta_map_get(out, "output");
+    ASSERT_NOT_NULL(o);
+    ASSERT_STR(pasta_get_string(pasta_map_get(o, "theme")), "dark");
+    ASSERT_NULL(pasta_map_get(o, "secret"));
+
+    pasta_free(out);
+    alf_free(ctx);
+    PASS();
+}
+
+static void test_alforno_collect_merge(void) {
+    TEST("alforno: conflate collect merges arrays");
+    AlfContext *ctx = alf_create(ALF_CONFLATE, NULL);
+    ASSERT_NOT_NULL(ctx);
+
+    const char *recipe =
+        "@merged {\n  consumes: [\"a\", \"b\"],\n  merge: \"collect\",\n"
+        "  tags: \"collected\"\n}\n";
+    const char *input1 = "@a {\n  tags: \"fast\"\n}\n";
+    const char *input2 = "@b {\n  tags: \"safe\"\n}\n";
+
+    AlfResult ar;
+    ASSERT_EQ(alf_set_recipe(ctx, recipe, strlen(recipe), &ar), 0);
+    ASSERT_EQ(alf_add_input(ctx, input1, strlen(input1), &ar), 0);
+    ASSERT_EQ(alf_add_input(ctx, input2, strlen(input2), &ar), 0);
+
+    PastaValue *out = alf_process(ctx, &ar);
+    ASSERT_NOT_NULL(out);
+
+    /* @merged.tags should be an array of both values */
+    const PastaValue *m = pasta_map_get(out, "merged");
+    ASSERT_NOT_NULL(m);
+    const PastaValue *tags = pasta_map_get(m, "tags");
+    ASSERT_NOT_NULL(tags);
+    ASSERT_EQ((int)pasta_type(tags), PASTA_ARRAY);
+    ASSERT_EQ((int)pasta_count(tags), 2);
+
+    pasta_free(out);
+    alf_free(ctx);
+    PASS();
+}
+
 /* ---- Multi-architecture / triples ---- */
 
 static void test_triple_parse_full(void) {
@@ -3413,6 +3540,12 @@ int main(void) {
     test_layer_merge_strarray_exclude();
     test_layer_audit_format();
     test_layer_push_project();
+
+    printf("\n  Alforno integration:\n");
+    test_alforno_aggregate_merge();
+    test_alforno_parameterize();
+    test_alforno_conflate();
+    test_alforno_collect_merge();
 
     printf("\n  Multi-architecture:\n");
     test_triple_parse_full();

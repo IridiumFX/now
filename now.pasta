@@ -14,7 +14,11 @@
       "lib/pasta/src/main/c/pasta_lexer.c",
       "lib/pasta/src/main/c/pasta_parser.c",
       "lib/pasta/src/main/c/pasta_value.c",
-      "lib/pasta/src/main/c/pasta_writer.c"
+      "lib/pasta/src/main/c/pasta_writer.c",
+      "lib/alforno/src/main/c/alforno.c",
+      "lib/alforno/src/main/c/alforno_param.c",
+      "lib/alforno/src/main/c/alforno_merge.c",
+      "lib/alforno/src/main/c/alforno_link.c"
     ]
   },
 
@@ -22,9 +26,11 @@
     warnings: ["Wall", "Wextra"],
     includes: [
       "lib/pasta/src/main/h",
-      "lib/pasta/src/main/c"
+      "lib/pasta/src/main/c",
+      "lib/alforno/src/main/h",
+      "lib/alforno/src/main/c"
     ],
-    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "PASTA_STATIC"]
+    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "PASTA_STATIC", "ALF_STATIC"]
   },
 
   link: {

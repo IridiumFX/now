@@ -37,11 +37,11 @@ new capabilities across `now`.
 
 | # | Item | Library | Status | Impact |
 |---|------|---------|--------|--------|
-| P.1 | Update pasta submodule to v0.2 | pasta | TODO | `PASTA_LABEL`, `PASTA_SORTED`, section references |
-| P.2 | Wire alforno into layer system | alforno | TODO | Replace hand-rolled `now_layer.c` merge with `alf_create(ALF_AGGREGATE)` pipeline |
-| P.3 | `now fmt` via pasta write | pasta | TODO | Parse → write with `PASTA_PRETTY \| PASTA_SORTED` — near one-liner |
+| P.1 | Update pasta submodule to v0.2 | pasta | DONE | `PASTA_LABEL`, `PASTA_SORTED`, section references |
+| P.2 | Wire alforno into layer system | alforno | DONE | Vendored alforno sources, `alf_value_clone` + `alf_map_merge` in layer merge, 4 integration tests |
+| P.3 | `now fmt` via pasta write | pasta | DONE | Parse → write with `PASTA_PRETTY \| PASTA_SORTED` — near one-liner |
 | P.4 | Basta package format | basta | TODO | Single-file packages with embedded binaries, replace tar.gz + sidecar |
-| P.5 | Alforno for `now init` templates | alforno | TODO | Parameterized project scaffolding via `@vars` + `conflate` |
+| P.5 | Alforno for `now init` templates | alforno | DONE | Parameterized project scaffolding via `@vars` + aggregate pipeline |
 
 ### Pasta ecosystem repos
 
@@ -106,7 +106,7 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 ## Current Sprint
 
 ```
-1.2 (now init)  →  1.3 (now fmt)  →  P.1-P.2 (alforno)  →  1.4 (C++20)
+1.2 (DONE)  →  1.3 (DONE)  →  P.1-P.3, P.5 (DONE)  →  1.4 (C++20 modules)
 ```
 
 Self-hosting is done. Next: remove friction from first experience,

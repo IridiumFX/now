@@ -46,12 +46,19 @@ add_library(now
     src/main/c/now_repro.c
     src/main/c/now_advisory.c
     src/main/c/now_auth.c
+    # Alforno (vendored sources — avoids FetchContent conflict with pasta)
+    lib/alforno/src/main/c/alforno.c
+    lib/alforno/src/main/c/alforno_param.c
+    lib/alforno/src/main/c/alforno_merge.c
+    lib/alforno/src/main/c/alforno_link.c
 )
 
 target_include_directories(now
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/main/h>
             $<INSTALL_INTERFACE:include>
     PRIVATE ${CMAKE_SOURCE_DIR}/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
+            ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
 )
 
 target_link_libraries(now PUBLIC pasta)
@@ -66,7 +73,7 @@ endif()
 
 
 if(BUILD_SHARED_LIBS)
-    target_compile_definitions(now PRIVATE NOW_BUILDING PICO_HTTP_BUILDING)
+    target_compile_definitions(now PRIVATE NOW_BUILDING PICO_HTTP_BUILDING ALF_BUILDING)
     set_target_properties(now PROPERTIES
         VERSION   ${PROJECT_VERSION}
         SOVERSION 0
@@ -74,7 +81,7 @@ if(BUILD_SHARED_LIBS)
         VISIBILITY_INLINES_HIDDEN ON
     )
 else()
-    target_compile_definitions(now PUBLIC NOW_STATIC PICO_HTTP_STATIC)
+    target_compile_definitions(now PUBLIC NOW_STATIC PICO_HTTP_STATIC ALF_STATIC)
     set_target_properties(now PROPERTIES
         VERSION   ${PROJECT_VERSION}
     )
@@ -96,14 +103,21 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_executable(now_cli src/main/c/main.c)
 set_target_properties(now_cli PROPERTIES OUTPUT_NAME now)
 target_link_libraries(now_cli PRIVATE now)
-target_include_directories(now_cli PRIVATE ${CMAKE_SOURCE_DIR}/src/main/h/internal)
+target_include_directories(now_cli PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
+)
 
 # ---- Test executable ----
 option(NOW_BUILD_TESTS "Build test executable" ON)
 if(NOW_BUILD_TESTS)
     add_executable(now_test src/test/c/now_test.c)
     target_link_libraries(now_test PRIVATE now)
-    target_include_directories(now_test PRIVATE ${CMAKE_SOURCE_DIR}/src/main/h/internal)
+    target_include_directories(now_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
+        ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
+    )
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"
     )
