@@ -23,9 +23,9 @@ the word.
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 1.1 | `compile_commands.json` | DONE | `now compile-db` generates arguments-form JSON |
-| 1.2 | `now init` scaffolding | TODO | `now init` → edit → `now build` in 30 seconds |
-| 1.3 | `now fmt` (Pasta formatter) | TODO | Trivial with `PASTA_SORTED` + `PASTA_PRETTY` from Pasta v0.2 |
-| 1.4 | C++20 modules (pre-scan) | TODO | The CMake pain-killer |
+| 1.2 | `now init` scaffolding | DONE | Alforno-templated scaffolding, C/C++ |
+| 1.3 | `now fmt` (Pasta formatter) | DONE | `PASTA_SORTED` + `PASTA_PRETTY` |
+| 1.4 | C++20 modules (pre-scan) | DONE | Module scanner, topo sort, GCC `-fmodules-ts`, MSVC `/interface`, `.cppm/.ixx/.ccm` |
 | 1.5 | Additional languages | TODO | Rust FFI, mixed C/C++ with Go |
 
 ---
@@ -106,7 +106,8 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 ## Current Sprint
 
 ```
-1.2 (DONE)  →  1.3 (DONE)  →  P.1-P.3, P.5 (DONE)  →  1.4 (C++20 modules)
+Tier 1 complete (1.1-1.4). Pasta ecosystem (P.1-P.3, P.5) complete.
+Next: 1.5 (additional languages) or Tier 2 items.
 ```
 
 Self-hosting is done. Next: remove friction from first experience,

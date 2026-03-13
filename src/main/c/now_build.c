@@ -6,6 +6,7 @@
 #include "now_build.h"
 #include "now_manifest.h"
 #include "now_repro.h"
+#include "now_module.h"
 #include "now.h"
 
 #include <stdlib.h>
@@ -986,6 +987,62 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             now_repro_sort_filelist(&ctx->sources);
     }
 
+    /* Module pre-scan: detect C++20 module declarations and reorder sources */
+    NowModuleScan modscan;
+    now_module_scan_init(&modscan);
+    int has_modules = 0;
+
+    /* Check if C++ is active and std >= c++20 */
+    const char *std_check = p->compile.std ? p->compile.std : p->std;
+    int cxx20_or_later = std_check && (
+        strcmp(std_check, "c++20") == 0 || strcmp(std_check, "c++2a") == 0 ||
+        strcmp(std_check, "c++23") == 0 || strcmp(std_check, "c++2b") == 0 ||
+        strcmp(std_check, "c++26") == 0 || strcmp(std_check, "c++latest") == 0);
+
+    if (cxx20_or_later) {
+        /* Scan all sources for module declarations */
+        for (size_t i = 0; i < ctx->sources.count; i++) {
+            const char *src = ctx->sources.paths[i];
+            const char *ext = strrchr(src, '.');
+            if (ext && (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cppm") == 0 ||
+                        strcmp(ext, ".ixx") == 0 || strcmp(ext, ".ccm") == 0 ||
+                        strcmp(ext, ".cxx") == 0 || strcmp(ext, ".cc") == 0)) {
+                char *full = now_path_join(ctx->basedir, src);
+                if (full) {
+                    now_module_scan_file(&modscan, full);
+                    free(full);
+                }
+            }
+        }
+        has_modules = (int)modscan.unit_count > 0;
+
+        /* Reorder sources: module interfaces first, then impl, then regular */
+        if (has_modules) {
+            NowModuleOrder morder;
+            if (now_module_order(&modscan,
+                                  (const char *const *)ctx->sources.paths,
+                                  ctx->sources.count, &morder) == 0) {
+                /* Replace source list with ordered list */
+                for (size_t i = 0; i < ctx->sources.count; i++)
+                    free(ctx->sources.paths[i]);
+                free(ctx->sources.paths);
+                ctx->sources.paths = morder.paths;
+                ctx->sources.count = morder.count;
+                /* Don't free morder — we took ownership of its paths */
+                morder.paths = NULL;
+                morder.count = 0;
+                now_module_order_free(&morder);
+            }
+
+            /* Ensure BMI output directory exists */
+            char *bmi_dir = now_path_join(ctx->target_dir, "bmi");
+            if (bmi_dir) {
+                now_mkdir_p(bmi_dir);
+                free(bmi_dir);
+            }
+        }
+    }
+
     /* Load manifest for incremental builds */
     NowManifest manifest;
     char *manifest_path = now_path_join(ctx->basedir, "target/.now-manifest");
@@ -1007,6 +1064,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         free(fhash);
         free(manifest_path);
         now_manifest_free(&manifest);
+        now_module_scan_free(&modscan);
         return -1;
     }
 
@@ -1057,6 +1115,82 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     job->argc = new_argc;
                 }
             }
+            /* Inject C++20 module flags if applicable */
+            if (has_modules && !ctx->toolchain.is_msvc) {
+                NowCompileJob *job = &jobs[njobs];
+                /* Check if this source file is a module unit or imports modules */
+                char *src_full = now_path_join(ctx->basedir, src);
+                int is_mod = src_full ? now_module_is_module_file(&modscan, src_full) : 0;
+                int imports_mod = 0;
+                if (src_full) {
+                    for (size_t mi = 0; mi < modscan.import_count; mi++) {
+                        if (strcmp(modscan.imports[mi].importer_path, src_full) == 0) {
+                            imports_mod = 1;
+                            break;
+                        }
+                    }
+                }
+                free(src_full);
+
+                if (is_mod || imports_mod) {
+                    /* GCC/Clang: add -fmodules-ts (GCC) or no extra flag (Clang auto-detects) */
+                    int nmod_flags = 1;  /* -fmodules-ts */
+                    int new_argc = job->argc + nmod_flags;
+                    char **new_argv = realloc(job->argv,
+                                              (new_argc + 1) * sizeof(char *));
+                    if (new_argv) {
+                        /* Insert -fmodules-ts after the std flag (index 2) */
+                        int insert_at = 2;
+                        if (insert_at > job->argc) insert_at = job->argc;
+                        memmove(new_argv + insert_at + nmod_flags,
+                                new_argv + insert_at,
+                                (job->argc - insert_at + 1) * sizeof(char *));
+                        new_argv[insert_at] = strdup("-fmodules-ts");
+                        job->argv = new_argv;
+                        job->argc = new_argc;
+                    }
+                }
+            } else if (has_modules && ctx->toolchain.is_msvc) {
+                NowCompileJob *job = &jobs[njobs];
+                char *src_full = now_path_join(ctx->basedir, src);
+                int is_iface = 0;
+                if (src_full) {
+                    for (size_t mi = 0; mi < modscan.unit_count; mi++) {
+                        if (modscan.units[mi].is_interface &&
+                            strcmp(modscan.units[mi].source_path, src_full) == 0) {
+                            is_iface = 1;
+                            break;
+                        }
+                    }
+                }
+                free(src_full);
+
+                if (is_iface) {
+                    /* MSVC: add /interface /ifcOutput target/bmi/ */
+                    char *bmi_dir = now_path_join(ctx->target_dir, "bmi/");
+                    int nmod_flags = bmi_dir ? 3 : 1;
+                    int new_argc = job->argc + nmod_flags;
+                    char **new_argv = realloc(job->argv,
+                                              (new_argc + 1) * sizeof(char *));
+                    if (new_argv) {
+                        int insert_at = 2;
+                        if (insert_at > job->argc) insert_at = job->argc;
+                        memmove(new_argv + insert_at + nmod_flags,
+                                new_argv + insert_at,
+                                (job->argc - insert_at + 1) * sizeof(char *));
+                        new_argv[insert_at] = strdup("/interface");
+                        if (bmi_dir) {
+                            new_argv[insert_at + 1] = strdup("/ifcOutput");
+                            new_argv[insert_at + 2] = bmi_dir;
+                        }
+                        job->argv = new_argv;
+                        job->argc = new_argc;
+                    } else {
+                        free(bmi_dir);
+                    }
+                }
+            }
+
             njobs++;
         }
         else
@@ -1229,6 +1363,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     now_repro_free_flags(repro_flags, repro_flag_count);
     free(repro_timestamp);
     now_repro_free(&repro);
+    now_module_scan_free(&modscan);
 
     if (ctx->verbose && (compiled > 0 || skipped > 0)) {
         if (max_jobs > 1 && compiled > 1)

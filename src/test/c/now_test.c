@@ -23,6 +23,7 @@
 #include "now_repro.h"
 #include "now_advisory.h"
 #include "now_auth.h"
+#include "now_module.h"
 #include "alforno.h"
 #include "pico_http.h"
 #include "pico_ws.h"
@@ -2130,6 +2131,192 @@ static void test_triple_is_native(void) {
     PASS();
 }
 
+/* ---- C++20 Module Pre-scan ---- */
+
+/* Helper: write a temporary file for module scanning */
+static char *write_temp_module_file(const char *name, const char *content) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", NOW_TEST_RESOURCES, name);
+    FILE *f = fopen(path, "w");
+    if (!f) return NULL;
+    fputs(content, f);
+    fclose(f);
+    return strdup(path);
+}
+
+static void remove_temp_file(const char *path) {
+    if (path) remove(path);
+}
+
+static void test_module_scan_interface(void) {
+    TEST("module: scan detects export module");
+    char *path = write_temp_module_file("test_mod.cppm",
+        "export module mylib.core;\n"
+        "\n"
+        "export int add(int a, int b) { return a + b; }\n");
+    ASSERT_NOT_NULL(path);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    ASSERT_EQ(now_module_scan_file(&scan, path), 0);
+    ASSERT_EQ((int)scan.unit_count, 1);
+    ASSERT_STR(scan.units[0].name, "mylib.core");
+    ASSERT_EQ(scan.units[0].is_interface, 1);
+
+    now_module_scan_free(&scan);
+    remove_temp_file(path);
+    free(path);
+    PASS();
+}
+
+static void test_module_scan_import(void) {
+    TEST("module: scan detects import");
+    char *path = write_temp_module_file("test_imp.cpp",
+        "import mylib.core;\n"
+        "\n"
+        "int main() { return add(1, 2); }\n");
+    ASSERT_NOT_NULL(path);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    ASSERT_EQ(now_module_scan_file(&scan, path), 0);
+    ASSERT_EQ((int)scan.import_count, 1);
+    ASSERT_STR(scan.imports[0].module_name, "mylib.core");
+
+    now_module_scan_free(&scan);
+    remove_temp_file(path);
+    free(path);
+    PASS();
+}
+
+static void test_module_scan_impl(void) {
+    TEST("module: scan detects implementation unit");
+    char *path = write_temp_module_file("test_impl.cpp",
+        "module mylib.core;\n"
+        "\n"
+        "void internal_func() {}\n");
+    ASSERT_NOT_NULL(path);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    ASSERT_EQ(now_module_scan_file(&scan, path), 0);
+    ASSERT_EQ((int)scan.unit_count, 1);
+    ASSERT_STR(scan.units[0].name, "mylib.core");
+    ASSERT_EQ(scan.units[0].is_interface, 0);
+
+    now_module_scan_free(&scan);
+    remove_temp_file(path);
+    free(path);
+    PASS();
+}
+
+static void test_module_scan_skips_comments(void) {
+    TEST("module: scan ignores commented-out declarations");
+    char *path = write_temp_module_file("test_comment.cpp",
+        "// export module fake;\n"
+        "/* import ignored; */\n"
+        "#include <stdio.h>\n"
+        "int main() { return 0; }\n");
+    ASSERT_NOT_NULL(path);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    ASSERT_EQ(now_module_scan_file(&scan, path), 0);
+    ASSERT_EQ((int)scan.unit_count, 0);
+    ASSERT_EQ((int)scan.import_count, 0);
+
+    now_module_scan_free(&scan);
+    remove_temp_file(path);
+    free(path);
+    PASS();
+}
+
+static void test_module_order_basic(void) {
+    TEST("module: topo order puts interface before consumer");
+    /* Create two files: interface and consumer */
+    char *iface = write_temp_module_file("topo_iface.cppm",
+        "export module greeter;\n"
+        "export const char *greet() { return \"hi\"; }\n");
+    char *consumer = write_temp_module_file("topo_main.cpp",
+        "import greeter;\n"
+        "int main() { greet(); return 0; }\n");
+    ASSERT_NOT_NULL(iface);
+    ASSERT_NOT_NULL(consumer);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    now_module_scan_file(&scan, iface);
+    now_module_scan_file(&scan, consumer);
+
+    const char *sources[] = { consumer, iface };
+    NowModuleOrder order;
+    ASSERT_EQ(now_module_order(&scan, sources, 2, &order), 0);
+
+    /* Interface should come first */
+    ASSERT_EQ((int)order.count, 2);
+    if (strcmp(order.paths[0], iface) != 0) { FAIL("interface not first"); now_module_order_free(&order); now_module_scan_free(&scan); remove_temp_file(iface); remove_temp_file(consumer); free(iface); free(consumer); return; }
+    if (strcmp(order.paths[1], consumer) != 0) { FAIL("consumer not second"); now_module_order_free(&order); now_module_scan_free(&scan); remove_temp_file(iface); remove_temp_file(consumer); free(iface); free(consumer); return; }
+
+    now_module_order_free(&order);
+    now_module_scan_free(&scan);
+    remove_temp_file(iface);
+    remove_temp_file(consumer);
+    free(iface);
+    free(consumer);
+    PASS();
+}
+
+static void test_module_find(void) {
+    TEST("module: find returns interface by name");
+    char *path = write_temp_module_file("test_find.cppm",
+        "export module utils;\n");
+    ASSERT_NOT_NULL(path);
+
+    NowModuleScan scan;
+    now_module_scan_init(&scan);
+    now_module_scan_file(&scan, path);
+
+    const NowModuleUnit *u = now_module_find(&scan, "utils");
+    ASSERT_NOT_NULL(u);
+    ASSERT_STR(u->name, "utils");
+    ASSERT_EQ(u->is_interface, 1);
+    ASSERT_NULL(now_module_find(&scan, "nonexistent"));
+
+    now_module_scan_free(&scan);
+    remove_temp_file(path);
+    free(path);
+    PASS();
+}
+
+static void test_module_bmi_path(void) {
+    TEST("module: BMI path generation");
+    char *p = now_module_bmi_path("target", "mylib.core", 0);
+    ASSERT_NOT_NULL(p);
+    /* Should end with /bmi/mylib.core.pcm */
+    ASSERT_NOT_NULL(strstr(p, "bmi"));
+    ASSERT_NOT_NULL(strstr(p, "mylib.core.pcm"));
+    free(p);
+
+    char *pm = now_module_bmi_path("target", "mylib.core", 1);
+    ASSERT_NOT_NULL(pm);
+    ASSERT_NOT_NULL(strstr(pm, "mylib.core.ifc"));
+    free(pm);
+    PASS();
+}
+
+static void test_module_classify_cppm(void) {
+    TEST("module: classify .cppm as cxx-module");
+    now_lang_registry_init();
+    const char *langs[] = { "c++" };
+    const NowLangDef *lang = NULL;
+    const NowLangType *type = now_lang_classify("foo.cppm", langs, 1, &lang);
+    ASSERT_NOT_NULL(type);
+    ASSERT_STR(type->id, "cxx-module");
+    ASSERT_NOT_NULL(lang);
+    ASSERT_STR(lang->id, "c++");
+    PASS();
+}
+
 /* ---- Export ---- */
 
 static void test_export_cmake_basic(void) {
@@ -3557,6 +3744,16 @@ int main(void) {
     test_triple_match_wildcard();
     test_triple_host_detect();
     test_triple_is_native();
+
+    printf("\n  C++20 Modules:\n");
+    test_module_scan_interface();
+    test_module_scan_import();
+    test_module_scan_impl();
+    test_module_scan_skips_comments();
+    test_module_order_basic();
+    test_module_find();
+    test_module_bmi_path();
+    test_module_classify_cppm();
 
     printf("\n  Export:\n");
     test_export_cmake_basic();

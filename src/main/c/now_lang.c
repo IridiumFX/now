@@ -52,6 +52,7 @@ static const NowLangDef lang_c = {
 
 /* C++ language (§4.2) */
 static const char *cxx_source_exts[] = { ".cpp", ".cxx", ".cc", ".C", ".c++", NULL };
+static const char *cxx_module_exts[] = { ".cppm", ".ixx", ".ccm", NULL };
 static const char *cxx_header_exts[] = { ".hpp", ".hh", ".hxx", ".H", NULL };
 
 static const NowLangType cxx_types[] = {
@@ -62,6 +63,14 @@ static const NowLangType cxx_types[] = {
         .tool_var   = "${cxx}",
         .produces   = NOW_PRODUCES_OBJECT,
         .output_ext = ".cpp.o"
+    },
+    {
+        .id         = "cxx-module",
+        .extensions = cxx_module_exts,
+        .role       = NOW_ROLE_SOURCE,
+        .tool_var   = "${cxx}",
+        .produces   = NOW_PRODUCES_OBJECT,
+        .output_ext = ".cppm.o"
     },
     {
         .id         = "cxx-header",
