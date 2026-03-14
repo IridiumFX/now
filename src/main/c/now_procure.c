@@ -11,6 +11,7 @@
 #include "now_version.h"
 #include "now_resolve.h"
 #include "now_manifest.h"
+#include "now_package.h"
 #include "now_auth.h"
 #include "now_trust.h"
 #include "pico_http.h"
@@ -380,15 +381,20 @@ NOW_API int now_repo_install(const char *repo_root,
         return -1;
     }
 
-    /* For now, just copy the archive into the dep directory.
-     * TODO: extract .tar.gz into canonical layout (h/, lib/, etc.)
-     * For the initial implementation, we'll handle now.pasta download
-     * and plain files separately. */
+    /* Check file extension to decide extraction method */
+    size_t pathlen = strlen(archive_path);
+    if (pathlen > 6 && strcmp(archive_path + pathlen - 6, ".basta") == 0) {
+        /* Basta package: extract into canonical layout */
+        int rc = now_basta_extract(archive_path, dep_path, 0, result);
+        free(dep_path);
+        return rc;
+    }
+
+    /* Legacy tar.gz: copy the archive as-is */
     char *archive_dest = now_path_join(dep_path, "archive.tar.gz");
     free(dep_path);
     if (!archive_dest) return -1;
 
-    /* Copy file */
     FILE *src = fopen(archive_path, "rb");
     if (!src) {
         if (result) snprintf(result->message, sizeof(result->message),
@@ -617,9 +623,9 @@ NOW_API int now_procure(const NowProject *project, const NowProcureOpts *opts,
                                   sha_dest, jwt, result);
         }
 
-        /* Download the archive */
+        /* Download the archive (.basta or legacy .tar.gz) */
         char archive_name[256];
-        snprintf(archive_name, sizeof(archive_name), "%s-%s.tar.gz",
+        snprintf(archive_name, sizeof(archive_name), "%s-%s.basta",
                  entry->artifact, entry->version);
         char *archive_dest = now_path_join(dep_dir, archive_name);
         if (archive_dest) {
@@ -1099,9 +1105,9 @@ NOW_API int now_cache_mirror(const char *registry_url, const char *coords,
             free(desc_dest);
         }
 
-        /* Download archive */
+        /* Download archive (.basta) */
         char archive_name[256];
-        snprintf(archive_name, sizeof(archive_name), "%s-%s.tar.gz",
+        snprintf(archive_name, sizeof(archive_name), "%s-%s.basta",
                  e->artifact, e->version);
         char *archive_dest = now_path_join(dep_dir, archive_name);
         if (archive_dest) {

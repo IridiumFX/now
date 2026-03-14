@@ -41,7 +41,7 @@ new capabilities across `now`.
 | P.1 | Update pasta submodule to v0.2 | pasta | DONE | `PASTA_LABEL`, `PASTA_SORTED`, section references |
 | P.2 | Wire alforno into layer system | alforno | DONE | Vendored alforno sources, `alf_value_clone` + `alf_map_merge` in layer merge, 4 integration tests |
 | P.3 | `now fmt` via pasta write | pasta | DONE | Parse → write with `PASTA_PRETTY \| PASTA_SORTED` — near one-liner |
-| P.4 | Basta package format | basta | TODO | Single-file packages with embedded binaries, replace tar.gz + sidecar |
+| P.4 | Basta package format | basta | DONE | Single-file .basta packages with embedded blobs, replaces tar.gz + sidecar |
 | P.5 | Alforno for `now init` templates | alforno | DONE | Parameterized project scaffolding via `@vars` + aggregate pipeline |
 
 ### Pasta ecosystem repos
@@ -109,7 +109,7 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 ```
 Tier 1 complete (1.1-1.5). Pasta ecosystem (P.1-P.3, P.5) complete.
 Maven import/export (3.1) done. Java is a first-class language.
-Next: Java build phase (javac/jar), Tier 2 hardening, or P.4 (basta packages).
+P.4 (Basta packages) done. Next: 2.1 (native Ed25519).
 ```
 
 Self-hosting is done. Java + Maven interop bridges the enterprise world.

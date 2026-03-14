@@ -13,12 +13,20 @@
  * Returns a static string like "linux-x86_64-gnu" or "windows-x86_64-msvc". */
 NOW_API const char *now_host_triple(void);
 
-/* Package phase: assemble target/pkg/{artifact}-{version}-{triple}.tar.gz
- * containing the descriptor, headers, and built libraries/executables.
+/* Package phase: assemble target/pkg/{artifact}-{version}-{triple}.basta
+ * containing the descriptor, headers, and built libraries/executables
+ * as a single Basta file with embedded binary blobs.
  * Requires a successful build first.
  * Returns 0 on success. */
 NOW_API int now_package(const NowProject *project, const char *basedir,
                         int verbose, NowResult *result);
+
+/* Extract a .basta package into a directory.
+ * Writes descriptor (now.pasta), headers (h/), libraries (lib/), and
+ * executables (bin/) into dest_dir.
+ * Returns 0 on success. */
+NOW_API int now_basta_extract(const char *basta_path, const char *dest_dir,
+                               int verbose, NowResult *result);
 
 /* Install phase: extract/copy the packaged artifact into
  * ~/.now/repo/{group-path}/{artifact}/{version}/

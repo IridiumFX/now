@@ -1,6 +1,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifdef _WIN32
+  #include <direct.h>
+  #define rmdir _rmdir
+#else
+  #include <unistd.h>
+#endif
 #include "now.h"
 #include "pasta.h"
 
@@ -25,6 +31,7 @@
 #include "now_auth.h"
 #include "now_module.h"
 #include "alforno.h"
+#include "basta.h"
 #include "pico_http.h"
 #include "pico_ws.h"
 
@@ -3833,6 +3840,273 @@ static void test_ci_format_text(void) {
     PASS();
 }
 
+/* ---- Basta package tests ---- */
+
+static void test_basta_create_and_parse(void) {
+    TEST("basta: create document with blob");
+    BastaValue *root = basta_new_map();
+    if (!root) { FAIL("basta_new_map"); return; }
+
+    /* Add metadata */
+    BastaValue *meta = basta_new_map();
+    basta_set(meta, "format", basta_new_string("basta/1"));
+    basta_set(meta, "artifact", basta_new_string("testlib"));
+    basta_set(root, "metadata", meta);
+
+    /* Add a blob */
+    const uint8_t test_data[] = "hello blob content";
+    BastaValue *files = basta_new_map();
+    basta_set(files, "test.h", basta_new_blob(test_data, sizeof(test_data) - 1));
+    basta_set(root, "headers", files);
+
+    /* Write to buffer */
+    size_t out_len;
+    char *buf = basta_write(root, BASTA_SECTIONS, &out_len);
+    basta_free(root);
+    if (!buf) { FAIL("basta_write"); return; }
+
+    /* Parse it back */
+    BastaResult bres;
+    BastaValue *parsed = basta_parse(buf, out_len, &bres);
+    free(buf);
+    if (!parsed) { FAIL(bres.message); return; }
+
+    /* Verify metadata */
+    const BastaValue *m = basta_map_get(parsed, "metadata");
+    if (!m || basta_type(m) != BASTA_MAP) { basta_free(parsed); FAIL("no metadata"); return; }
+    const BastaValue *art = basta_map_get(m, "artifact");
+    if (!art || strcmp(basta_get_string(art), "testlib") != 0) {
+        basta_free(parsed); FAIL("artifact mismatch"); return;
+    }
+
+    /* Verify blob */
+    const BastaValue *h = basta_map_get(parsed, "headers");
+    if (!h || basta_type(h) != BASTA_MAP) { basta_free(parsed); FAIL("no headers"); return; }
+    const BastaValue *blob = basta_map_get(h, "test.h");
+    if (!blob || basta_type(blob) != BASTA_BLOB) { basta_free(parsed); FAIL("no blob"); return; }
+    size_t blen;
+    const uint8_t *bdata = basta_get_blob(blob, &blen);
+    if (blen != sizeof(test_data) - 1 || memcmp(bdata, test_data, blen) != 0) {
+        basta_free(parsed); FAIL("blob content mismatch"); return;
+    }
+
+    basta_free(parsed);
+    PASS();
+}
+
+static void test_basta_package_roundtrip(void) {
+    TEST("basta: package → extract roundtrip");
+
+    /* Create a minimal project for packaging */
+    NowProject *p = now_project_new();
+    if (!p) { FAIL("now_project_new"); return; }
+    p->group    = strdup("io.test");
+    p->artifact = strdup("roundtrip");
+    p->version  = strdup("1.0.0");
+    p->output.type = strdup("static");
+
+    /* Create a temp directory with a descriptor and fake build output */
+    char tmpdir[512];
+    snprintf(tmpdir, sizeof(tmpdir), "%s/basta_test_tmp", NOW_TEST_RESOURCES);
+    now_mkdir_p(tmpdir);
+
+    /* Write a now.pasta descriptor */
+    char desc_path[512];
+    snprintf(desc_path, sizeof(desc_path), "%s/now.pasta", tmpdir);
+    FILE *fp = fopen(desc_path, "w");
+    if (fp) {
+        fprintf(fp, "{ group: \"io.test\", artifact: \"roundtrip\", version: \"1.0.0\" }\n");
+        fclose(fp);
+    }
+
+    /* Create target/bin with a fake library */
+    char bindir[512];
+    snprintf(bindir, sizeof(bindir), "%s/target/bin", tmpdir);
+    now_mkdir_p(bindir);
+
+    char libpath[512];
+#ifdef _WIN32
+    snprintf(libpath, sizeof(libpath), "%s/roundtrip.lib", bindir);
+#else
+    snprintf(libpath, sizeof(libpath), "%s/libroundtrip.a", bindir);
+#endif
+    fp = fopen(libpath, "wb");
+    if (fp) {
+        const char *fake_lib = "FAKE_LIB_DATA_1234567890";
+        fwrite(fake_lib, 1, strlen(fake_lib), fp);
+        fclose(fp);
+    }
+
+    /* Create headers */
+    char hdrdir[512];
+    snprintf(hdrdir, sizeof(hdrdir), "%s/src/main/h", tmpdir);
+    now_mkdir_p(hdrdir);
+    p->sources.headers = strdup("src/main/h");
+
+    char hdrpath[512];
+    snprintf(hdrpath, sizeof(hdrpath), "%s/roundtrip.h", hdrdir);
+    fp = fopen(hdrpath, "w");
+    if (fp) {
+        fprintf(fp, "#ifndef ROUNDTRIP_H\n#define ROUNDTRIP_H\nvoid roundtrip(void);\n#endif\n");
+        fclose(fp);
+    }
+
+    /* Package it */
+    NowResult res;
+    int rc = now_package(p, tmpdir, 0, &res);
+    if (rc != 0) { FAIL(res.message); now_project_free(p); return; }
+
+    /* Verify .basta file exists */
+    char basta_path[512];
+    const char *triple = now_host_triple();
+    snprintf(basta_path, sizeof(basta_path), "%s/target/pkg/roundtrip-1.0.0-%s.basta",
+             tmpdir, triple);
+
+    if (!now_path_exists(basta_path)) {
+        FAIL("basta file not created"); now_project_free(p); return;
+    }
+
+    /* Extract it */
+    char extract_dir[512];
+    snprintf(extract_dir, sizeof(extract_dir), "%s/extracted", tmpdir);
+    rc = now_basta_extract(basta_path, extract_dir, 0, &res);
+    if (rc != 0) { FAIL(res.message); now_project_free(p); return; }
+
+    /* Verify extracted descriptor exists */
+    char ex_desc[512];
+    snprintf(ex_desc, sizeof(ex_desc), "%s/now.pasta", extract_dir);
+    if (!now_path_exists(ex_desc)) {
+        FAIL("extracted now.pasta missing"); now_project_free(p); return;
+    }
+
+    /* Verify extracted header exists */
+    char ex_hdr[512];
+    snprintf(ex_hdr, sizeof(ex_hdr), "%s/h/roundtrip.h", extract_dir);
+    if (!now_path_exists(ex_hdr)) {
+        FAIL("extracted header missing"); now_project_free(p); return;
+    }
+
+    /* Verify extracted library exists */
+    char ex_lib[512];
+#ifdef _WIN32
+    snprintf(ex_lib, sizeof(ex_lib), "%s/lib/%s/roundtrip.lib", extract_dir, triple);
+#else
+    snprintf(ex_lib, sizeof(ex_lib), "%s/lib/%s/libroundtrip.a", extract_dir, triple);
+#endif
+    if (!now_path_exists(ex_lib)) {
+        FAIL("extracted library missing"); now_project_free(p); return;
+    }
+
+    now_project_free(p);
+
+    /* Cleanup temp files */
+    remove(ex_lib);
+    remove(ex_hdr);
+    remove(ex_desc);
+    char ex_hdir[512], ex_ldir[512], ex_ltdir[512];
+    snprintf(ex_hdir, sizeof(ex_hdir), "%s/h", extract_dir);
+    snprintf(ex_ltdir, sizeof(ex_ltdir), "%s/lib/%s", extract_dir, triple);
+    snprintf(ex_ldir, sizeof(ex_ldir), "%s/lib", extract_dir);
+    rmdir(ex_ltdir);
+    rmdir(ex_ldir);
+    rmdir(ex_hdir);
+    rmdir(extract_dir);
+    remove(basta_path);
+    char sha_path[512];
+    snprintf(sha_path, sizeof(sha_path), "%s/target/pkg/roundtrip-1.0.0-%s.sha256",
+             tmpdir, triple);
+    remove(sha_path);
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/target/pkg", tmpdir);
+    rmdir(pkgdir);
+    remove(libpath);
+    rmdir(bindir);
+    char targetdir[512];
+    snprintf(targetdir, sizeof(targetdir), "%s/target", tmpdir);
+    rmdir(targetdir);
+    remove(hdrpath);
+    rmdir(hdrdir);
+    char srcmain[512];
+    snprintf(srcmain, sizeof(srcmain), "%s/src/main", tmpdir);
+    rmdir(srcmain);
+    char srcdir[512];
+    snprintf(srcdir, sizeof(srcdir), "%s/src", tmpdir);
+    rmdir(srcdir);
+    remove(desc_path);
+    rmdir(tmpdir);
+
+    PASS();
+}
+
+static void test_basta_extract_null_safety(void) {
+    TEST("basta: extract null safety");
+    NowResult res;
+    int rc = now_basta_extract(NULL, NULL, 0, &res);
+    if (rc != -1) { FAIL("expected -1"); return; }
+    PASS();
+}
+
+static void test_basta_extract_missing_file(void) {
+    TEST("basta: extract missing file");
+    NowResult res;
+    int rc = now_basta_extract("/nonexistent/file.basta", "/tmp/out", 0, &res);
+    if (rc != -1) { FAIL("expected -1"); return; }
+    PASS();
+}
+
+static void test_basta_metadata_fields(void) {
+    TEST("basta: metadata has format/group/artifact/version");
+
+    /* Build a Basta doc like now_package does */
+    BastaValue *root = basta_new_map();
+    BastaValue *meta = basta_new_map();
+    basta_set(meta, "format",      basta_new_string("basta/1"));
+    basta_set(meta, "group",       basta_new_string("com.example"));
+    basta_set(meta, "artifact",    basta_new_string("mylib"));
+    basta_set(meta, "version",     basta_new_string("2.3.4"));
+    basta_set(meta, "triple",      basta_new_string("linux-x86_64-gnu"));
+    basta_set(meta, "output_type", basta_new_string("shared"));
+    basta_set(root, "metadata", meta);
+
+    /* Write and re-parse */
+    size_t len;
+    char *buf = basta_write(root, BASTA_SECTIONS, &len);
+    basta_free(root);
+    if (!buf) { FAIL("write"); return; }
+
+    BastaResult bres;
+    BastaValue *parsed = basta_parse(buf, len, &bres);
+    free(buf);
+    if (!parsed) { FAIL(bres.message); return; }
+
+    const BastaValue *m = basta_map_get(parsed, "metadata");
+    if (!m) { basta_free(parsed); FAIL("no metadata"); return; }
+
+    const BastaValue *fmt = basta_map_get(m, "format");
+    if (!fmt || strcmp(basta_get_string(fmt), "basta/1") != 0) {
+        basta_free(parsed); FAIL("format"); return;
+    }
+    const BastaValue *grp = basta_map_get(m, "group");
+    if (!grp || strcmp(basta_get_string(grp), "com.example") != 0) {
+        basta_free(parsed); FAIL("group"); return;
+    }
+    const BastaValue *art = basta_map_get(m, "artifact");
+    if (!art || strcmp(basta_get_string(art), "mylib") != 0) {
+        basta_free(parsed); FAIL("artifact"); return;
+    }
+    const BastaValue *ver = basta_map_get(m, "version");
+    if (!ver || strcmp(basta_get_string(ver), "2.3.4") != 0) {
+        basta_free(parsed); FAIL("version"); return;
+    }
+    const BastaValue *tri = basta_map_get(m, "triple");
+    if (!tri || strcmp(basta_get_string(tri), "linux-x86_64-gnu") != 0) {
+        basta_free(parsed); FAIL("triple"); return;
+    }
+
+    basta_free(parsed);
+    PASS();
+}
+
 int main(void) {
     printf("now test suite\n");
     printf("==============\n\n");
@@ -4100,6 +4374,13 @@ int main(void) {
     test_export_make_static();
     test_export_make_deps();
     test_export_make_cxx();
+
+    printf("\n  Basta packages:\n");
+    test_basta_create_and_parse();
+    test_basta_metadata_fields();
+    test_basta_extract_null_safety();
+    test_basta_extract_missing_file();
+    test_basta_package_roundtrip();
 
     printf("\n  Build integration:\n");
     test_build_hello();

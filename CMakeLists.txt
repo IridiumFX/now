@@ -53,6 +53,11 @@ add_library(now
     lib/alforno/src/main/c/alforno_param.c
     lib/alforno/src/main/c/alforno_merge.c
     lib/alforno/src/main/c/alforno_link.c
+    # Basta (vendored sources — single-file packages with embedded blobs)
+    lib/basta/src/main/c/basta_lexer.c
+    lib/basta/src/main/c/basta_parser.c
+    lib/basta/src/main/c/basta_value.c
+    lib/basta/src/main/c/basta_writer.c
 )
 
 target_include_directories(now
@@ -61,6 +66,8 @@ target_include_directories(now
     PRIVATE ${CMAKE_SOURCE_DIR}/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
+            ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
+            ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
 )
 
 target_link_libraries(now PUBLIC pasta)
@@ -75,7 +82,7 @@ endif()
 
 
 if(BUILD_SHARED_LIBS)
-    target_compile_definitions(now PRIVATE NOW_BUILDING PICO_HTTP_BUILDING ALF_BUILDING)
+    target_compile_definitions(now PRIVATE NOW_BUILDING PICO_HTTP_BUILDING ALF_BUILDING BASTA_BUILDING)
     set_target_properties(now PROPERTIES
         VERSION   ${PROJECT_VERSION}
         SOVERSION 0
@@ -83,7 +90,7 @@ if(BUILD_SHARED_LIBS)
         VISIBILITY_INLINES_HIDDEN ON
     )
 else()
-    target_compile_definitions(now PUBLIC NOW_STATIC PICO_HTTP_STATIC ALF_STATIC)
+    target_compile_definitions(now PUBLIC NOW_STATIC PICO_HTTP_STATIC ALF_STATIC BASTA_STATIC)
     set_target_properties(now PROPERTIES
         VERSION   ${PROJECT_VERSION}
     )
@@ -108,6 +115,7 @@ target_link_libraries(now_cli PRIVATE now)
 target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
+    ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
 )
 
 # ---- Test executable ----
@@ -119,6 +127,8 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
         ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
+        ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
+        ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
     )
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"

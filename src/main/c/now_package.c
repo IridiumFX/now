@@ -14,6 +14,7 @@
 #include "now_auth.h"
 #include "pico_http.h"
 #include "pasta.h"
+#include "basta.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,6 +134,71 @@ static int copy_tree(const char *basedir, const char *rel_dir,
     return 0;
 }
 
+/* Read an entire file into a malloc'd buffer. Sets *out_len. */
+static char *pkg_read_file(const char *path, size_t *out_len) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz < 0) { fclose(fp); return NULL; }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)sz);
+    if (!buf) { fclose(fp); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    *out_len = n;
+    return buf;
+}
+
+/* Add a file as a named blob entry in a Basta map.
+ * Key is the relative filename (e.g. "mylib.h").
+ * Returns 0 on success, -1 on failure (file not found is not an error). */
+static int add_file_blob(BastaValue *map, const char *key,
+                         const char *filepath) {
+    size_t len;
+    char *data = pkg_read_file(filepath, &len);
+    if (!data) return 0;  /* file not found → skip */
+    BastaValue *blob = basta_new_blob((const uint8_t *)data, len);
+    free(data);
+    if (!blob) return -1;
+    basta_set(map, key, blob);
+    return 0;
+}
+
+/* Collect header files into a Basta map: { "name.h": <blob>, ... } */
+static BastaValue *collect_headers(const char *basedir, const char *hdr_dir) {
+    BastaValue *hmap = basta_new_map();
+    if (!hmap) return NULL;
+
+    NowFileList files;
+    now_filelist_init(&files);
+    const char *hdr_exts[] = {".h", ".hpp", ".hxx", ".hh", ".H", NULL};
+
+    if (now_discover_sources(basedir, hdr_dir, hdr_exts, &files) != 0) {
+        now_filelist_free(&files);
+        return hmap;  /* empty map is fine */
+    }
+
+    size_t dir_len = strlen(hdr_dir);
+    for (size_t i = 0; i < files.count; i++) {
+        const char *rel = files.paths[i];
+        /* Strip hdr_dir prefix to get sub-path */
+        const char *sub = rel;
+        if (strncmp(rel, hdr_dir, dir_len) == 0) {
+            sub = rel + dir_len;
+            if (*sub == '/' || *sub == '\\') sub++;
+        }
+        char *full = now_path_join(basedir, rel);
+        if (full) {
+            add_file_blob(hmap, sub, full);
+            free(full);
+        }
+    }
+
+    now_filelist_free(&files);
+    return hmap;
+}
+
 /* ---- Package phase ---- */
 
 NOW_API int now_package(const NowProject *project, const char *basedir,
@@ -145,193 +211,362 @@ NOW_API int now_package(const NowProject *project, const char *basedir,
         return -1;
     }
 
+    const char *group    = project->group    ? project->group    : "unknown";
     const char *artifact = project->artifact ? project->artifact : "unnamed";
     const char *version  = project->version  ? project->version  : "0.0.0";
     const char *triple   = now_host_triple();
     const char *out_type = project->output.type ? project->output.type : "executable";
+    int is_header_only = (strcmp(out_type, "header-only") == 0);
 
-    /* Create staging directory: target/pkg/{artifact}-{version}/ */
-    char *pkg_dir = now_path_join(basedir, "target/pkg");
-    if (!pkg_dir) return -1;
-    now_mkdir_p(pkg_dir);
+    /* Build the root Basta document (sections map) */
+    BastaValue *root = basta_new_map();
+    if (!root) return -1;
 
-    char stage_name[256];
-    snprintf(stage_name, sizeof(stage_name), "%s-%s", artifact, version);
-    char *stage_dir = now_path_join(pkg_dir, stage_name);
-    if (!stage_dir) { free(pkg_dir); return -1; }
-    now_mkdir_p(stage_dir);
+    /* @metadata section */
+    {
+        BastaValue *meta = basta_new_map();
+        basta_set(meta, "format", basta_new_string("basta/1"));
+        basta_set(meta, "group",    basta_new_string(group));
+        basta_set(meta, "artifact", basta_new_string(artifact));
+        basta_set(meta, "version",  basta_new_string(version));
+        basta_set(meta, "triple",   basta_new_string(is_header_only ? "noarch" : triple));
+        basta_set(meta, "output_type", basta_new_string(out_type));
+        if (project->output.name)
+            basta_set(meta, "output_name", basta_new_string(project->output.name));
+        basta_set(root, "metadata", meta);
+    }
 
-    /* 1. Copy descriptor */
-    char *desc_src = now_path_join(basedir, "now.pasta");
-    char *desc_dst = now_path_join(stage_dir, "now.pasta");
-    if (desc_src && desc_dst && now_path_exists(desc_src))
-        copy_file(desc_src, desc_dst);
-    free(desc_src);
-    free(desc_dst);
-
-    /* Copy lock file if present */
-    char *lock_src = now_path_join(basedir, "now.lock.pasta");
-    char *lock_dst = now_path_join(stage_dir, "now.lock.pasta");
-    if (lock_src && lock_dst && now_path_exists(lock_src))
-        copy_file(lock_src, lock_dst);
-    free(lock_src);
-    free(lock_dst);
-
-    /* Copy LICENSE if present */
-    char *lic_src = now_path_join(basedir, "LICENSE");
-    char *lic_dst = now_path_join(stage_dir, "LICENSE");
-    if (lic_src && lic_dst && now_path_exists(lic_src))
-        copy_file(lic_src, lic_dst);
-    free(lic_src);
-    free(lic_dst);
-
-    /* 2. Copy public headers into h/ */
-    const char *hdr_dir = project->sources.headers;
-    if (hdr_dir) {
-        char *h_dst = now_path_join(stage_dir, "h");
-        if (h_dst) {
-            now_mkdir_p(h_dst);
-            const char *hdr_exts[] = {".h", ".hpp", ".hxx", ".hh", ".H", NULL};
-            copy_tree(basedir, hdr_dir, h_dst, hdr_exts);
-            free(h_dst);
+    /* @descriptor section: embed now.pasta as a blob */
+    {
+        char *desc_path = now_path_join(basedir, "now.pasta");
+        if (desc_path) {
+            BastaValue *desc_sec = basta_new_map();
+            add_file_blob(desc_sec, "now.pasta", desc_path);
+            /* Lock file if present */
+            char *lock_path = now_path_join(basedir, "now.lock.pasta");
+            if (lock_path) {
+                add_file_blob(desc_sec, "now.lock.pasta", lock_path);
+                free(lock_path);
+            }
+            basta_set(root, "descriptor", desc_sec);
+            free(desc_path);
         }
     }
 
-    /* 3. Copy build output into lib/{triple}/ or bin/{triple}/ */
-    char *bin_src_dir = now_path_join(basedir, "target/bin");
-    if (bin_src_dir) {
-        int is_executable = (strcmp(out_type, "executable") == 0);
-        const char *dest_subdir = is_executable ? "bin" : "lib";
+    /* @headers section: embed header files as named blobs */
+    if (project->sources.headers) {
+        BastaValue *hdrs = collect_headers(basedir, project->sources.headers);
+        if (hdrs)
+            basta_set(root, "headers", hdrs);
+    }
 
-        char *type_dir = now_path_join(stage_dir, dest_subdir);
-        if (type_dir) {
-            char *triple_dir = now_path_join(type_dir, triple);
-            if (triple_dir) {
-                now_mkdir_p(triple_dir);
-
-                /* Find the output file(s) in target/bin/ */
-                const char *out_name = project->output.name
-                                       ? project->output.name : artifact;
-
-                /* Build the expected filename */
-                char out_file[256];
-                if (strcmp(out_type, "static") == 0) {
+    /* @files section: embed build outputs as named blobs */
+    {
+        const char *out_name = project->output.name
+                               ? project->output.name : artifact;
+        char out_file[256];
+        if (strcmp(out_type, "static") == 0) {
 #ifdef _WIN32
-                    snprintf(out_file, sizeof(out_file), "%s.lib", out_name);
+            snprintf(out_file, sizeof(out_file), "%s.lib", out_name);
 #else
-                    snprintf(out_file, sizeof(out_file), "lib%s.a", out_name);
+            snprintf(out_file, sizeof(out_file), "lib%s.a", out_name);
 #endif
-                } else if (strcmp(out_type, "shared") == 0) {
+        } else if (strcmp(out_type, "shared") == 0) {
 #ifdef _WIN32
-                    snprintf(out_file, sizeof(out_file), "%s.dll", out_name);
+            snprintf(out_file, sizeof(out_file), "%s.dll", out_name);
 #elif defined(__APPLE__)
-                    snprintf(out_file, sizeof(out_file), "lib%s.dylib", out_name);
+            snprintf(out_file, sizeof(out_file), "lib%s.dylib", out_name);
 #else
-                    snprintf(out_file, sizeof(out_file), "lib%s.so", out_name);
+            snprintf(out_file, sizeof(out_file), "lib%s.so", out_name);
 #endif
-                } else {
+        } else {
+            /* executable or Java jar */
 #ifdef _WIN32
-                    snprintf(out_file, sizeof(out_file), "%s.exe", out_name);
+            snprintf(out_file, sizeof(out_file), "%s.exe", out_name);
 #else
-                    snprintf(out_file, sizeof(out_file), "%s", out_name);
+            snprintf(out_file, sizeof(out_file), "%s", out_name);
 #endif
-                }
+        }
 
-                char *out_src = now_path_join(bin_src_dir, out_file);
-                char *out_dst = now_path_join(triple_dir, out_file);
-                if (out_src && out_dst && now_path_exists(out_src))
-                    copy_file(out_src, out_dst);
-                free(out_src);
-                free(out_dst);
-
-                /* For shared libs on Windows, also copy the import lib */
-                if (strcmp(out_type, "shared") == 0) {
+        BastaValue *files = basta_new_map();
+        char *bin_dir = now_path_join(basedir, "target/bin");
+        if (bin_dir) {
+            char *out_path = now_path_join(bin_dir, out_file);
+            if (out_path) {
+                add_file_blob(files, out_file, out_path);
+                free(out_path);
+            }
+            /* For shared libs on Windows, also include the import lib */
+            if (strcmp(out_type, "shared") == 0) {
 #ifdef _WIN32
-                    char imp_file[256];
-                    snprintf(imp_file, sizeof(imp_file), "%s.lib", out_name);
-                    char *imp_src = now_path_join(bin_src_dir, imp_file);
-                    /* Import lib might be in lib/ instead of bin/ */
-                    char *lib_dir = now_path_join(basedir, "target/lib");
-                    char *imp_src2 = lib_dir ? now_path_join(lib_dir, imp_file) : NULL;
-                    char *imp_dst = now_path_join(triple_dir, imp_file);
-                    if (imp_src && imp_dst && now_path_exists(imp_src))
-                        copy_file(imp_src, imp_dst);
-                    else if (imp_src2 && imp_dst && now_path_exists(imp_src2))
-                        copy_file(imp_src2, imp_dst);
-                    free(imp_src);
-                    free(imp_src2);
-                    free(imp_dst);
-                    free(lib_dir);
-#endif
+                char imp_file[256];
+                snprintf(imp_file, sizeof(imp_file), "%s.lib", out_name);
+                char *imp_path = now_path_join(bin_dir, imp_file);
+                if (imp_path) {
+                    if (!now_path_exists(imp_path)) {
+                        free(imp_path);
+                        char *lib_dir = now_path_join(basedir, "target/lib");
+                        if (lib_dir) {
+                            imp_path = now_path_join(lib_dir, imp_file);
+                            free(lib_dir);
+                        } else {
+                            imp_path = NULL;
+                        }
+                    }
+                    if (imp_path) {
+                        add_file_blob(files, imp_file, imp_path);
+                        free(imp_path);
+                    }
                 }
+#endif
+            }
+            free(bin_dir);
+        }
+        basta_set(root, "files", files);
+    }
 
-                free(triple_dir);
+    /* @license section */
+    {
+        char *lic_path = now_path_join(basedir, "LICENSE");
+        if (lic_path) {
+            if (now_path_exists(lic_path)) {
+                BastaValue *lic_sec = basta_new_map();
+                add_file_blob(lic_sec, "LICENSE", lic_path);
+                basta_set(root, "license", lic_sec);
+            }
+            free(lic_path);
+        }
+    }
+
+    /* Write the .basta file */
+    char *pkg_dir = now_path_join(basedir, "target/pkg");
+    if (!pkg_dir) { basta_free(root); return -1; }
+    now_mkdir_p(pkg_dir);
+
+    char basta_name[512];
+    snprintf(basta_name, sizeof(basta_name), "%s-%s-%s.basta",
+             artifact, version, is_header_only ? "noarch" : triple);
+
+    char *basta_path = now_path_join(pkg_dir, basta_name);
+    if (!basta_path) { free(pkg_dir); basta_free(root); return -1; }
+
+    if (verbose)
+        fprintf(stderr, "  packaging %s\n", basta_name);
+
+    FILE *fp = fopen(basta_path, "wb");
+    if (!fp) {
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "cannot create %s", basta_path);
+        }
+        free(basta_path);
+        free(pkg_dir);
+        basta_free(root);
+        return -1;
+    }
+
+    int wrc = basta_write_fp(root, BASTA_SECTIONS, fp);
+    fclose(fp);
+    basta_free(root);
+
+    if (wrc != 0) {
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "basta_write_fp failed");
+        }
+        free(basta_path);
+        free(pkg_dir);
+        return -1;
+    }
+
+    /* Compute SHA-256 of the .basta file and store in metadata.
+     * Also write a .sha256 sidecar for backward compat. */
+    char *sha = now_sha256_file(basta_path);
+    if (sha) {
+        char sha_name[512];
+        snprintf(sha_name, sizeof(sha_name), "%s-%s-%s.sha256",
+                 artifact, version, is_header_only ? "noarch" : triple);
+        char *sha_path = now_path_join(pkg_dir, sha_name);
+        if (sha_path) {
+            FILE *sfp = fopen(sha_path, "w");
+            if (sfp) {
+                fprintf(sfp, "%s\n", sha);
+                fclose(sfp);
+            }
+            free(sha_path);
+        }
+        free(sha);
+    }
+
+    free(basta_path);
+    free(pkg_dir);
+
+    if (result) {
+        result->code = NOW_OK;
+        result->message[0] = '\0';
+    }
+    return 0;
+}
+
+/* ---- Basta extraction ---- */
+
+/* Write a blob to a file. Returns 0 on success. */
+static int write_blob_file(const char *path, const BastaValue *blob) {
+    size_t len;
+    const uint8_t *data = basta_get_blob(blob, &len);
+    if (!data) return -1;
+
+    /* Create parent directories */
+    char *parent = strdup(path);
+    if (parent) {
+        char *sep = strrchr(parent, '/');
+        if (!sep) sep = strrchr(parent, '\\');
+        if (sep) {
+            *sep = '\0';
+            now_mkdir_p(parent);
+        }
+        free(parent);
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    size_t written = fwrite(data, 1, len, fp);
+    fclose(fp);
+    return (written == len) ? 0 : -1;
+}
+
+NOW_API int now_basta_extract(const char *basta_path, const char *dest_dir,
+                               int verbose, NowResult *result) {
+    if (!basta_path || !dest_dir) {
+        if (result) {
+            result->code = NOW_ERR_SCHEMA;
+            snprintf(result->message, sizeof(result->message),
+                     "NULL basta_path or dest_dir");
+        }
+        return -1;
+    }
+
+    /* Read the .basta file */
+    size_t file_len;
+    char *file_data = pkg_read_file(basta_path, &file_len);
+    if (!file_data) {
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "cannot read %s", basta_path);
+        }
+        return -1;
+    }
+
+    BastaResult bres;
+    BastaValue *root = basta_parse(file_data, file_len, &bres);
+    free(file_data);
+    if (!root) {
+        if (result) {
+            result->code = NOW_ERR_SCHEMA;
+            snprintf(result->message, sizeof(result->message),
+                     "basta parse error: %s", bres.message);
+        }
+        return -1;
+    }
+
+    now_mkdir_p(dest_dir);
+
+    /* Extract @descriptor section → now.pasta, now.lock.pasta */
+    const BastaValue *desc = basta_map_get(root, "descriptor");
+    if (desc && basta_type(desc) == BASTA_MAP) {
+        for (size_t i = 0; i < basta_count(desc); i++) {
+            const char *key = basta_map_key(desc, i);
+            const BastaValue *val = basta_map_value(desc, i);
+            if (key && val && basta_type(val) == BASTA_BLOB) {
+                char *path = now_path_join(dest_dir, key);
+                if (path) {
+                    if (verbose) fprintf(stderr, "  extract %s\n", key);
+                    write_blob_file(path, val);
+                    free(path);
+                }
+            }
+        }
+    }
+
+    /* Extract @headers section → h/{name} */
+    const BastaValue *hdrs = basta_map_get(root, "headers");
+    if (hdrs && basta_type(hdrs) == BASTA_MAP) {
+        char *h_dir = now_path_join(dest_dir, "h");
+        if (h_dir) {
+            now_mkdir_p(h_dir);
+            for (size_t i = 0; i < basta_count(hdrs); i++) {
+                const char *key = basta_map_key(hdrs, i);
+                const BastaValue *val = basta_map_value(hdrs, i);
+                if (key && val && basta_type(val) == BASTA_BLOB) {
+                    char *path = now_path_join(h_dir, key);
+                    if (path) {
+                        if (verbose) fprintf(stderr, "  extract h/%s\n", key);
+                        write_blob_file(path, val);
+                        free(path);
+                    }
+                }
+            }
+            free(h_dir);
+        }
+    }
+
+    /* Extract @files section → lib/{triple}/ or bin/{triple}/ */
+    const BastaValue *files = basta_map_get(root, "files");
+    const BastaValue *meta  = basta_map_get(root, "metadata");
+    if (files && basta_type(files) == BASTA_MAP && meta) {
+        const BastaValue *otype_v  = basta_map_get(meta, "output_type");
+        const BastaValue *triple_v = basta_map_get(meta, "triple");
+        const char *otype  = otype_v  ? basta_get_string(otype_v)  : "executable";
+        const char *tri    = triple_v ? basta_get_string(triple_v) : "unknown";
+
+        int is_exe = (strcmp(otype, "executable") == 0);
+        const char *sub = is_exe ? "bin" : "lib";
+
+        char *type_dir = now_path_join(dest_dir, sub);
+        if (type_dir) {
+            char *tri_dir = now_path_join(type_dir, tri);
+            if (tri_dir) {
+                now_mkdir_p(tri_dir);
+                for (size_t i = 0; i < basta_count(files); i++) {
+                    const char *key = basta_map_key(files, i);
+                    const BastaValue *val = basta_map_value(files, i);
+                    if (key && val && basta_type(val) == BASTA_BLOB) {
+                        char *path = now_path_join(tri_dir, key);
+                        if (path) {
+                            if (verbose)
+                                fprintf(stderr, "  extract %s/%s/%s\n", sub, tri, key);
+                            write_blob_file(path, val);
+                            free(path);
+                        }
+                    }
+                }
+                free(tri_dir);
             }
             free(type_dir);
         }
-        free(bin_src_dir);
     }
 
-    /* 4. Create the tarball */
-    char tarball_name[512];
-    int is_header_only = (strcmp(out_type, "header-only") == 0);
-    snprintf(tarball_name, sizeof(tarball_name), "%s-%s-%s.tar.gz",
-             artifact, version, is_header_only ? "noarch" : triple);
-
-    char *tarball_path = now_path_join(pkg_dir, tarball_name);
-    if (tarball_path) {
-        /* Use tar to create the archive */
-        char cmd[2048];
-#ifdef _WIN32
-        /* --force-local prevents tar from interpreting C: as a remote host */
-        snprintf(cmd, sizeof(cmd),
-                 "tar --force-local -czf \"%s\" -C \"%s\" \"%s\"",
-                 tarball_path, pkg_dir, stage_name);
-#else
-        snprintf(cmd, sizeof(cmd),
-                 "tar -czf \"%s\" -C \"%s\" \"%s\"",
-                 tarball_path, pkg_dir, stage_name);
-#endif
-
-        if (verbose)
-            fprintf(stderr, "  packaging %s\n", tarball_name);
-
-        int rc = system(cmd);
-        if (rc != 0) {
-            if (result) {
-                result->code = NOW_ERR_TOOL;
-                snprintf(result->message, sizeof(result->message),
-                         "tar failed (exit %d)", rc);
-            }
-            free(tarball_path);
-            free(stage_dir);
-            free(pkg_dir);
-            return -1;
-        }
-
-        /* 5. Create SHA-256 sidecar */
-        char *sha = now_sha256_file(tarball_path);
-        if (sha) {
-            char sha_name[512];
-            snprintf(sha_name, sizeof(sha_name), "%s-%s-%s.sha256",
-                     artifact, version, is_header_only ? "noarch" : triple);
-            char *sha_path = now_path_join(pkg_dir, sha_name);
-            if (sha_path) {
-                FILE *fp = fopen(sha_path, "w");
-                if (fp) {
-                    fprintf(fp, "%s\n", sha);
-                    fclose(fp);
+    /* Extract @license section */
+    const BastaValue *lic = basta_map_get(root, "license");
+    if (lic && basta_type(lic) == BASTA_MAP) {
+        for (size_t i = 0; i < basta_count(lic); i++) {
+            const char *key = basta_map_key(lic, i);
+            const BastaValue *val = basta_map_value(lic, i);
+            if (key && val && basta_type(val) == BASTA_BLOB) {
+                char *path = now_path_join(dest_dir, key);
+                if (path) {
+                    if (verbose) fprintf(stderr, "  extract %s\n", key);
+                    write_blob_file(path, val);
+                    free(path);
                 }
-                free(sha_path);
             }
-            free(sha);
         }
-
-        free(tarball_path);
     }
 
-    free(stage_dir);
-    free(pkg_dir);
+    basta_free(root);
 
     if (result) {
         result->code = NOW_OK;
@@ -484,22 +719,6 @@ NOW_API int now_install(const NowProject *project, const char *basedir,
 
 /* ---- Publish phase ---- */
 
-/* Read an entire file into a malloc'd buffer. Sets *out_len. */
-static char *read_file_all(const char *path, size_t *out_len) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return NULL;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    if (sz < 0) { fclose(fp); return NULL; }
-    fseek(fp, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)sz);
-    if (!buf) { fclose(fp); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, fp);
-    fclose(fp);
-    *out_len = n;
-    return buf;
-}
-
 /* Authenticate with registry: load credentials, exchange for JWT if possible.
  * Returns malloc'd token string (JWT or raw token), or NULL if no credentials.
  * Caller must free. */
@@ -644,34 +863,29 @@ NOW_API int now_publish(const NowProject *project, const char *basedir,
     /* Authenticate with registry */
     char *token = auth_for_registry(url, host, port, prefix, tls, result);
 
-    /* Find tarball and SHA-256 sidecar in target/pkg/ */
+    /* Find .basta package in target/pkg/ */
     const char *triple   = now_host_triple();
     const char *out_type = project->output.type ? project->output.type : "executable";
     int is_header_only = (strcmp(out_type, "header-only") == 0);
     const char *arch_str = is_header_only ? "noarch" : triple;
 
-    char tarball_name[512];
-    snprintf(tarball_name, sizeof(tarball_name), "%s-%s-%s.tar.gz",
-             artifact, version, arch_str);
-
-    char sha_name[512];
-    snprintf(sha_name, sizeof(sha_name), "%s-%s-%s.sha256",
+    char basta_name[512];
+    snprintf(basta_name, sizeof(basta_name), "%s-%s-%s.basta",
              artifact, version, arch_str);
 
     char *pkg_dir = now_path_join(basedir, "target/pkg");
     if (!pkg_dir) { free(host); free(prefix); free(token); return -1; }
 
-    char *tarball_path = now_path_join(pkg_dir, tarball_name);
-    char *sha_path     = now_path_join(pkg_dir, sha_name);
+    char *basta_path = now_path_join(pkg_dir, basta_name);
 
-    if (!tarball_path || !now_path_exists(tarball_path)) {
+    if (!basta_path || !now_path_exists(basta_path)) {
         if (result) {
             result->code = NOW_ERR_NOT_FOUND;
             snprintf(result->message, sizeof(result->message),
                      "package not found: run 'now package' first (%s)",
-                     tarball_name);
+                     basta_name);
         }
-        free(tarball_path); free(sha_path); free(pkg_dir);
+        free(basta_path); free(pkg_dir);
         free(host); free(prefix); free(token);
         return -1;
     }
@@ -686,12 +900,13 @@ NOW_API int now_publish(const NowProject *project, const char *basedir,
 
     int errors = 0;
 
-    /* 1. PUT the descriptor (now.pasta) */
+    /* 1. PUT the descriptor (now.pasta) — separate from .basta for
+     *    registry content negotiation / metadata queries */
     {
         char *desc_path = now_path_join(basedir, "now.pasta");
         if (desc_path && now_path_exists(desc_path)) {
             size_t desc_len;
-            char *desc_data = read_file_all(desc_path, &desc_len);
+            char *desc_data = pkg_read_file(desc_path, &desc_len);
             if (desc_data) {
                 char rel[512];
                 snprintf(rel, sizeof(rel), "%s/%s/%s/now.pasta",
@@ -707,46 +922,31 @@ NOW_API int now_publish(const NowProject *project, const char *basedir,
         }
     }
 
-    /* 2. PUT the tarball */
+    /* 2. PUT the .basta package */
     if (errors == 0) {
-        size_t tar_len;
-        char *tar_data = read_file_all(tarball_path, &tar_len);
-        if (tar_data) {
+        size_t basta_len;
+        char *basta_data = pkg_read_file(basta_path, &basta_len);
+        if (basta_data) {
             char rel[512];
             snprintf(rel, sizeof(rel), "%s/%s/%s/%s",
-                     group_path, artifact, version, tarball_name);
+                     group_path, artifact, version, basta_name);
             rc = publish_put(host, port, prefix, rel,
-                             tar_data, tar_len, NULL,
+                             basta_data, basta_len,
+                             "application/x-basta",
                              token, tls, verbose, result);
-            free(tar_data);
+            free(basta_data);
             if (rc != 0) errors++;
         } else {
             if (result) {
                 result->code = NOW_ERR_IO;
                 snprintf(result->message, sizeof(result->message),
-                         "cannot read tarball: %s", tarball_path);
+                         "cannot read package: %s", basta_path);
             }
             errors++;
         }
     }
 
-    /* 3. PUT the SHA-256 sidecar */
-    if (errors == 0 && sha_path && now_path_exists(sha_path)) {
-        size_t sha_len;
-        char *sha_data = read_file_all(sha_path, &sha_len);
-        if (sha_data) {
-            char rel[512];
-            snprintf(rel, sizeof(rel), "%s/%s/%s/%s",
-                     group_path, artifact, version, sha_name);
-            rc = publish_put(host, port, prefix, rel,
-                             sha_data, sha_len, NULL,
-                             token, tls, verbose, result);
-            free(sha_data);
-            if (rc != 0) errors++;
-        }
-    }
-
-    /* 4. PUT the .sig file if present */
+    /* 3. PUT the .sig file if present */
     if (errors == 0) {
         char sig_name[512];
         snprintf(sig_name, sizeof(sig_name), "%s-%s-%s.sig",
@@ -754,7 +954,7 @@ NOW_API int now_publish(const NowProject *project, const char *basedir,
         char *sig_path = now_path_join(pkg_dir, sig_name);
         if (sig_path && now_path_exists(sig_path)) {
             size_t sig_len;
-            char *sig_data = read_file_all(sig_path, &sig_len);
+            char *sig_data = pkg_read_file(sig_path, &sig_len);
             if (sig_data) {
                 char rel[512];
                 snprintf(rel, sizeof(rel), "%s/%s/%s/%s",
@@ -769,8 +969,7 @@ NOW_API int now_publish(const NowProject *project, const char *basedir,
         free(sig_path);
     }
 
-    free(tarball_path);
-    free(sha_path);
+    free(basta_path);
     free(pkg_dir);
     free(host);
     free(prefix);
@@ -826,7 +1025,7 @@ NOW_API int now_publish_yank(const char *registry_url,
     /* Authenticate */
     char *token = auth_for_registry(registry_url, host, port, prefix, tls, result);
 
-    /* Build path: {prefix}/artifact/{group_path}/{artifact}/{version}/{artifact}-{version}.tar.gz/yank */
+    /* Build path: {prefix}/artifact/{group_path}/{artifact}/{version}/{artifact}-{version}.basta/yank */
     char group_path[256];
     strncpy(group_path, group, sizeof(group_path) - 1);
     group_path[sizeof(group_path) - 1] = '\0';
@@ -835,7 +1034,7 @@ NOW_API int now_publish_yank(const char *registry_url,
 
     char yank_path[1024];
     snprintf(yank_path, sizeof(yank_path),
-             "%s/artifact/%s/%s/%s/%s-%s.tar.gz/yank",
+             "%s/artifact/%s/%s/%s/%s-%s.basta/yank",
              prefix, group_path, artifact, version, artifact, version);
 
     /* Build body: {"reason":"..."} if reason is given */
