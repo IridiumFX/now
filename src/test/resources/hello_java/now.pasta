@@ -1,0 +1,9 @@
+{
+  group: "io.test",
+  artifact: "hello",
+  version: "1.0.0",
+  langs: ["java"],
+  std: "11",
+  output: { type: "executable", name: "hello" },
+  java: { main_class: "Hello" }
+}

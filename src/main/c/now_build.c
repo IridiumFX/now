@@ -423,8 +423,15 @@ static void ensure_tool_dir_in_path(const char *tool_path) {
 }
 #endif
 
+/* Check if Java is an active language in the project */
+static int has_java_lang(const NowProject *p) {
+    for (size_t i = 0; i < p->langs.count; i++) {
+        if (strcmp(p->langs.items[i], "java") == 0) return 1;
+    }
+    return 0;
+}
+
 NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
-    (void)p;  /* future: read toolchain from project */
 #ifdef _WIN32
     /* On Windows with MSVC, detect cl.exe; otherwise assume gcc/mingw */
     const char *cc_env = getenv("CC");
@@ -453,6 +460,13 @@ NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
     tc->ld     = NULL;
     tc->is_msvc = 0;
 #endif
+
+    /* Java tools (only if project uses Java) */
+    if (p && has_java_lang(p)) {
+        tc->javac = resolve_tool("JAVAC", "javac");
+        tc->jar   = resolve_tool("JAR",   "jar");
+        tc->java  = resolve_tool("JAVA",  "java");
+    }
 }
 
 NOW_API void now_toolchain_free(NowToolchain *tc) {
@@ -461,6 +475,9 @@ NOW_API void now_toolchain_free(NowToolchain *tc) {
     free(tc->ar);
     free(tc->as);
     free(tc->ld);
+    free(tc->javac);
+    free(tc->jar);
+    free(tc->java);
     memset(tc, 0, sizeof(*tc));
 }
 
@@ -963,9 +980,457 @@ static char *compile_flags_hash(const NowProject *p) {
     return hash;
 }
 
+/* ================================================================
+ * Java build support
+ *
+ * Java compilation: all .java sources → javac → target/classes/
+ * Java linking:     target/classes/ → jar → target/bin/{name}.jar
+ * Java testing:     test .java → javac → target/test-classes/ → java
+ * ================================================================ */
+
+/* Compile all Java sources in one javac invocation.
+ * javac --release {std} -d target/classes -cp {classpath} src1.java src2.java ...
+ * Returns 0 on success, non-zero on error. */
+static int build_java_compile(NowBuildCtx *ctx, NowResult *result) {
+    const NowProject *p = ctx->project;
+    const char *javac = ctx->toolchain.javac;
+    if (!javac) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "javac not found (set JAVAC env var)");
+        }
+        return -1;
+    }
+
+    /* Create output directory: target/classes */
+    char *classes_dir = now_path_join(ctx->basedir, "target/classes");
+    if (!classes_dir) return -1;
+    now_mkdir_p(classes_dir);
+
+    /* Collect .java source files */
+    size_t java_count = 0;
+    for (size_t i = 0; i < ctx->sources.count; i++) {
+        const char *ext = strrchr(ctx->sources.paths[i], '.');
+        if (ext && strcmp(ext, ".java") == 0) java_count++;
+    }
+
+    if (java_count == 0) {
+        free(classes_dir);
+        if (result) {
+            result->code = NOW_OK;
+            result->message[0] = '\0';
+        }
+        return 0;
+    }
+
+    /* Build argv: javac --release N -d target/classes [-cp ...] [-encoding ...] src1.java ... */
+    size_t argv_cap = java_count + 20 + p->java.classpath.count + p->compile.flags.count;
+    const char **argv = (const char **)calloc(argv_cap, sizeof(char *));
+    if (!argv) { free(classes_dir); return -1; }
+    int argc = 0;
+
+    argv[argc++] = javac;
+
+    /* --release flag */
+    char release_buf[32] = {0};
+    const char *std = p->compile.std ? p->compile.std : p->std;
+    if (std) {
+        snprintf(release_buf, sizeof(release_buf), "--release");
+        argv[argc++] = release_buf;
+        argv[argc++] = std;
+    }
+
+    /* Output directory */
+    argv[argc++] = "-d";
+    argv[argc++] = classes_dir;
+
+    /* Encoding */
+    const char *encoding = p->java.encoding ? p->java.encoding : "UTF-8";
+    argv[argc++] = "-encoding";
+    argv[argc++] = encoding;
+
+    /* Classpath: dep jars + user classpath entries */
+    char cp_buf[4096] = {0};
+    size_t cp_len = 0;
+
+    /* Add dependency paths */
+    for (size_t i = 0; i < ctx->dep_libdirs.count; i++) {
+        if (cp_len > 0) {
+#ifdef _WIN32
+            cp_buf[cp_len++] = ';';
+#else
+            cp_buf[cp_len++] = ':';
+#endif
+        }
+        size_t dlen = strlen(ctx->dep_libdirs.paths[i]);
+        if (cp_len + dlen + 2 < sizeof(cp_buf)) {
+            memcpy(cp_buf + cp_len, ctx->dep_libdirs.paths[i], dlen);
+            cp_len += dlen;
+        }
+    }
+
+    /* Add user classpath entries */
+    for (size_t i = 0; i < p->java.classpath.count; i++) {
+        if (cp_len > 0) {
+#ifdef _WIN32
+            cp_buf[cp_len++] = ';';
+#else
+            cp_buf[cp_len++] = ':';
+#endif
+        }
+        size_t elen = strlen(p->java.classpath.items[i]);
+        if (cp_len + elen + 2 < sizeof(cp_buf)) {
+            memcpy(cp_buf + cp_len, p->java.classpath.items[i], elen);
+            cp_len += elen;
+        }
+    }
+    cp_buf[cp_len] = '\0';
+
+    if (cp_len > 0) {
+        argv[argc++] = "-cp";
+        argv[argc++] = cp_buf;
+    }
+
+    /* Extra compiler flags */
+    for (size_t i = 0; i < p->compile.flags.count; i++)
+        argv[argc++] = p->compile.flags.items[i];
+
+    /* Source files (full paths) */
+    char **src_paths = NULL;
+    size_t src_count = 0;
+    src_paths = (char **)calloc(java_count, sizeof(char *));
+    if (!src_paths) { free(argv); free(classes_dir); return -1; }
+
+    for (size_t i = 0; i < ctx->sources.count; i++) {
+        const char *ext = strrchr(ctx->sources.paths[i], '.');
+        if (ext && strcmp(ext, ".java") == 0) {
+            src_paths[src_count] = now_path_join(ctx->basedir, ctx->sources.paths[i]);
+            if (src_paths[src_count])
+                argv[argc++] = src_paths[src_count];
+            src_count++;
+        }
+    }
+    argv[argc] = NULL;
+
+    if (ctx->verbose) {
+        fprintf(stderr, " ");
+        for (int i = 0; i < argc; i++)
+            fprintf(stderr, " %s", argv[i]);
+        fprintf(stderr, "\n");
+    }
+
+    int rc = now_exec((const char *const *)argv, 0);
+    if (rc != 0) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "javac failed (exit %d)", rc);
+        }
+    } else {
+        /* Register the classes directory as an "object" for the link phase */
+        now_filelist_push(&ctx->objects, classes_dir);
+
+        if (ctx->verbose)
+            fprintf(stderr, "  compiled %zu Java source(s) to %s\n",
+                    java_count, classes_dir);
+    }
+
+    for (size_t i = 0; i < src_count; i++) free(src_paths[i]);
+    free(src_paths);
+    free((void *)argv);
+    free(classes_dir);
+    return rc;
+}
+
+/* Package .class files into a JAR.
+ * jar cf target/bin/{name}.jar -C target/classes .
+ * For executables, adds Main-Class manifest entry.
+ * Returns 0 on success. */
+static int build_java_link(NowBuildCtx *ctx, NowResult *result) {
+    const NowProject *p = ctx->project;
+    const char *jar_tool = ctx->toolchain.jar;
+    if (!jar_tool) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "jar not found (set JAR env var)");
+        }
+        return -1;
+    }
+
+    /* Ensure output directory */
+    char *bin_dir = now_path_join(ctx->basedir, "target/bin");
+    if (!bin_dir) return -1;
+    now_mkdir_p(bin_dir);
+
+    /* Output JAR path */
+    const char *name = p->output.name ? p->output.name :
+                       (p->artifact ? p->artifact : "output");
+    char *jar_path = (char *)malloc(strlen(bin_dir) + strlen(name) + 8);
+    if (!jar_path) { free(bin_dir); return -1; }
+    sprintf(jar_path, "%s/%s.jar", bin_dir, name);
+
+    /* Classes directory */
+    char *classes_dir = now_path_join(ctx->basedir, "target/classes");
+    if (!classes_dir) { free(jar_path); free(bin_dir); return -1; }
+
+    const char *argv[16];
+    int argc = 0;
+    argv[argc++] = jar_tool;
+
+    /* Check if executable with main class */
+    const char *out_type = p->output.type ? p->output.type : "jar";
+    int is_exec = (strcmp(out_type, "executable") == 0) && p->java.main_class;
+
+    if (is_exec) {
+        /* jar cfe output.jar MainClass -C target/classes . */
+        argv[argc++] = "cfe";
+        argv[argc++] = jar_path;
+        argv[argc++] = p->java.main_class;
+    } else {
+        /* jar cf output.jar -C target/classes . */
+        argv[argc++] = "cf";
+        argv[argc++] = jar_path;
+    }
+
+    argv[argc++] = "-C";
+    argv[argc++] = classes_dir;
+    argv[argc++] = ".";
+    argv[argc] = NULL;
+
+    if (ctx->verbose) {
+        fprintf(stderr, " ");
+        for (int i = 0; i < argc; i++)
+            fprintf(stderr, " %s", argv[i]);
+        fprintf(stderr, "\n");
+    }
+
+    int rc = now_exec((const char *const *)argv, 0);
+    if (rc != 0) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "jar failed (exit %d)", rc);
+        }
+    } else {
+        if (ctx->verbose)
+            fprintf(stderr, "  packaged %s\n", jar_path);
+    }
+
+    free(jar_path);
+    free(classes_dir);
+    free(bin_dir);
+    return rc;
+}
+
+/* Compile and run Java tests.
+ * javac --release N -d target/test-classes -cp target/classes:deps src/test/java/*.java
+ * java -cp target/test-classes:target/classes:deps MainTestClass
+ * Returns 0 on success. */
+static int build_java_test(NowBuildCtx *ctx, NowResult *result) {
+    const NowProject *p = ctx->project;
+    const char *javac = ctx->toolchain.javac;
+    const char *java  = ctx->toolchain.java;
+    if (!javac || !java) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "javac/java not found for test execution");
+        }
+        return -1;
+    }
+
+    /* Check if test directory exists */
+    const char *test_dir_rel = p->tests.dir ? p->tests.dir : "src/test/java";
+    char *test_dir = now_path_join(ctx->basedir, test_dir_rel);
+    if (!test_dir || !now_path_exists(test_dir)) {
+        free(test_dir);
+        if (result) {
+            result->code = NOW_OK;
+            snprintf(result->message, sizeof(result->message), "no test directory");
+        }
+        return 0;
+    }
+
+    /* Discover test .java files */
+    NowFileList test_sources;
+    memset(&test_sources, 0, sizeof(test_sources));
+    const char *java_exts[] = { ".java", NULL };
+    now_discover_sources(ctx->basedir, test_dir_rel, java_exts, &test_sources);
+
+    size_t java_test_count = 0;
+    for (size_t i = 0; i < test_sources.count; i++) {
+        const char *ext = strrchr(test_sources.paths[i], '.');
+        if (ext && strcmp(ext, ".java") == 0) java_test_count++;
+    }
+
+    if (java_test_count == 0) {
+        now_filelist_free(&test_sources);
+        free(test_dir);
+        if (result) {
+            result->code = NOW_OK;
+            snprintf(result->message, sizeof(result->message), "no test sources");
+        }
+        return 0;
+    }
+
+    /* Create test-classes directory */
+    char *test_classes = now_path_join(ctx->basedir, "target/test-classes");
+    if (!test_classes) {
+        now_filelist_free(&test_sources);
+        free(test_dir);
+        return -1;
+    }
+    now_mkdir_p(test_classes);
+
+    /* Build classpath: target/classes + deps */
+    char *classes_dir = now_path_join(ctx->basedir, "target/classes");
+    char cp[4096];
+#ifdef _WIN32
+    const char *sep = ";";
+#else
+    const char *sep = ":";
+#endif
+    snprintf(cp, sizeof(cp), "%s", classes_dir ? classes_dir : ".");
+    for (size_t i = 0; i < ctx->dep_libdirs.count; i++) {
+        size_t cur = strlen(cp);
+        snprintf(cp + cur, sizeof(cp) - cur, "%s%s", sep, ctx->dep_libdirs.paths[i]);
+    }
+    for (size_t i = 0; i < p->java.classpath.count; i++) {
+        size_t cur = strlen(cp);
+        snprintf(cp + cur, sizeof(cp) - cur, "%s%s", sep, p->java.classpath.items[i]);
+    }
+
+    /* Phase 1: Compile test sources */
+    size_t argv_cap = java_test_count + 16;
+    const char **argv = (const char **)calloc(argv_cap, sizeof(char *));
+    if (!argv) {
+        now_filelist_free(&test_sources);
+        free(test_dir); free(test_classes); free(classes_dir);
+        return -1;
+    }
+    int argc = 0;
+
+    argv[argc++] = javac;
+
+    const char *std = p->compile.std ? p->compile.std : p->std;
+    char release_buf[32];
+    if (std) {
+        snprintf(release_buf, sizeof(release_buf), "--release");
+        argv[argc++] = release_buf;
+        argv[argc++] = std;
+    }
+
+    argv[argc++] = "-d";
+    argv[argc++] = test_classes;
+    argv[argc++] = "-cp";
+    argv[argc++] = cp;
+
+    /* Add test source files (full paths) */
+    char **test_full_paths = (char **)calloc(java_test_count, sizeof(char *));
+    size_t tfp_count = 0;
+    for (size_t i = 0; i < test_sources.count; i++) {
+        const char *ext = strrchr(test_sources.paths[i], '.');
+        if (ext && strcmp(ext, ".java") == 0) {
+            test_full_paths[tfp_count] = now_path_join(ctx->basedir, test_sources.paths[i]);
+            if (test_full_paths[tfp_count])
+                argv[argc++] = test_full_paths[tfp_count];
+            tfp_count++;
+        }
+    }
+    argv[argc] = NULL;
+
+    if (ctx->verbose) {
+        fprintf(stderr, " ");
+        for (int i = 0; i < argc; i++)
+            fprintf(stderr, " %s", argv[i]);
+        fprintf(stderr, "\n");
+    }
+
+    int rc = now_exec((const char *const *)argv, 0);
+    free((void *)argv);
+    for (size_t i = 0; i < tfp_count; i++) free(test_full_paths[i]);
+    free(test_full_paths);
+
+    if (rc != 0) {
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "javac (test) failed (exit %d)", rc);
+        }
+        now_filelist_free(&test_sources);
+        free(test_dir); free(test_classes); free(classes_dir);
+        return rc;
+    }
+
+    /* Phase 2: Run tests — find a class with main() */
+    /* Build test classpath: test-classes:classes:deps */
+    char test_cp[4096];
+    snprintf(test_cp, sizeof(test_cp), "%s%s%s", test_classes, sep, cp);
+
+    /* Look for a test runner class by scanning for *Test.java files */
+    const char *test_class = NULL;
+    char class_name[256] = {0};
+    for (size_t i = 0; i < test_sources.count; i++) {
+        const char *path = test_sources.paths[i];
+        const char *ext = strrchr(path, '.');
+        if (!ext || strcmp(ext, ".java") != 0) continue;
+
+        /* Extract class name from filename */
+        const char *slash = strrchr(path, '/');
+        if (!slash) slash = strrchr(path, '\\');
+        const char *fname = slash ? slash + 1 : path;
+        size_t namelen = (size_t)(ext - fname);
+        if (namelen >= sizeof(class_name)) continue;
+        memcpy(class_name, fname, namelen);
+        class_name[namelen] = '\0';
+        test_class = class_name;
+        break;  /* Use first test file */
+    }
+
+    if (test_class) {
+        const char *run_argv[8];
+        int run_argc = 0;
+        run_argv[run_argc++] = java;
+        run_argv[run_argc++] = "-cp";
+        run_argv[run_argc++] = test_cp;
+        run_argv[run_argc++] = test_class;
+        run_argv[run_argc] = NULL;
+
+        if (ctx->verbose) {
+            fprintf(stderr, " ");
+            for (int i = 0; i < run_argc; i++)
+                fprintf(stderr, " %s", run_argv[i]);
+            fprintf(stderr, "\n");
+        }
+
+        rc = now_exec((const char *const *)run_argv, 0);
+        if (rc != 0) {
+            if (result) {
+                result->code = NOW_ERR_TOOL;
+                snprintf(result->message, sizeof(result->message),
+                         "test %s failed (exit %d)", test_class, rc);
+            }
+        }
+    }
+
+    now_filelist_free(&test_sources);
+    free(test_dir);
+    free(test_classes);
+    free(classes_dir);
+    return rc;
+}
+
 NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     const NowProject *p = ctx->project;
     int errors = 0;
+
+    /* Java projects use a completely different compilation model */
+    if (has_java_lang(p) && p->langs.count > 0 &&
+        strcmp(p->langs.items[0], "java") == 0) {
+        return build_java_compile(ctx, result);
+    }
 
     /* Reproducibility: parse config and resolve timebase */
     NowReproConfig repro;
@@ -1424,6 +1889,12 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
     const NowProject *p = ctx->project;
     const char *basedir = ctx->basedir;
 
+    /* Java projects: package into JAR */
+    if (has_java_lang(p) && p->langs.count > 0 &&
+        strcmp(p->langs.items[0], "java") == 0) {
+        return build_java_link(ctx, result);
+    }
+
     if (ctx->objects.count == 0) {
         if (result) {
             result->code = NOW_ERR_NOT_FOUND;
@@ -1703,6 +2174,12 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
     const NowProject *p = ctx->project;
     const char *basedir = ctx->basedir;
+
+    /* Java projects: compile and run test sources */
+    if (has_java_lang(p) && p->langs.count > 0 &&
+        strcmp(p->langs.items[0], "java") == 0) {
+        return build_java_test(ctx, result);
+    }
 
     /* Determine test source directory */
     const char *test_dir = p->tests.dir;

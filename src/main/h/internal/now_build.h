@@ -19,6 +19,9 @@ typedef struct {
     char *as;      /* assembler */
     char *ld;      /* linker (optional, usually NULL = use cc/cxx) */
     int   is_msvc; /* true if this is an MSVC toolchain */
+    char *javac;   /* Java compiler */
+    char *jar;     /* JAR tool */
+    char *java;    /* Java runtime */
 } NowToolchain;
 
 /* Initialize toolchain from environment / defaults */

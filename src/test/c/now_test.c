@@ -406,6 +406,42 @@ static void test_build_hello(void) {
     PASS();
 }
 
+static void test_build_java_hello(void) {
+    TEST("build: compile and package Java project");
+
+    /* Skip if javac not available */
+    int javac_rc = now_exec((const char *const []){"javac", "-version", NULL}, 0);
+    if (javac_rc != 0) {
+        tests_run--;  /* don't count skipped */
+        printf("SKIP (javac not in PATH)\n");
+        return;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/hello_java/now.pasta", NOW_TEST_RESOURCES);
+
+    NowResult res;
+    NowProject *p = now_project_load(path, &res);
+    if (!p) { FAIL(res.message); return; }
+
+    char basedir[512];
+    snprintf(basedir, sizeof(basedir), "%s/hello_java", NOW_TEST_RESOURCES);
+
+    int rc = now_build(p, basedir, 0, 0, &res);
+    now_project_free(p);
+
+    if (rc != 0) { FAIL(res.message); return; }
+
+    /* Check JAR output exists */
+    char jar_path[512];
+    snprintf(jar_path, sizeof(jar_path), "%s/target/bin/hello.jar", basedir);
+    if (!now_path_exists(jar_path)) {
+        FAIL("output JAR not found");
+        return;
+    }
+    PASS();
+}
+
 /* ---- Semantic versioning ---- */
 
 static void test_semver_parse_basic(void) {
@@ -1368,6 +1404,49 @@ static void test_toolchain_msvc_detect(void) {
     /* MSVC detection only applies on Windows */
     PASS();
 #endif
+}
+
+static void test_toolchain_java_resolve(void) {
+    TEST("toolchain: resolves javac/jar/java for Java projects");
+    /* Create a project with Java lang */
+    const char *input = "{ group: \"t\", artifact: \"t\", version: \"1.0.0\", langs: [\"java\"] }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+
+    NowToolchain tc;
+    memset(&tc, 0, sizeof(tc));
+    now_toolchain_resolve(&tc, p);
+
+    /* javac/jar/java should be set (even if not found on system, they'll be defaults) */
+    ASSERT_NOT_NULL(tc.javac);
+    ASSERT_NOT_NULL(tc.jar);
+    ASSERT_NOT_NULL(tc.java);
+
+    now_toolchain_free(&tc);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_toolchain_no_java_for_c(void) {
+    TEST("toolchain: no javac/jar for C projects");
+    const char *input = "{ group: \"t\", artifact: \"t\", version: \"1.0.0\", langs: [\"c\"] }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+
+    NowToolchain tc;
+    memset(&tc, 0, sizeof(tc));
+    now_toolchain_resolve(&tc, p);
+
+    /* Java tools should NOT be resolved for C projects */
+    ASSERT_NULL(tc.javac);
+    ASSERT_NULL(tc.jar);
+    ASSERT_NULL(tc.java);
+
+    now_toolchain_free(&tc);
+    now_project_free(p);
+    PASS();
 }
 
 /* ---- Workspace ---- */
@@ -3863,6 +3942,8 @@ int main(void) {
     test_obj_path_ex_obj();
     test_toolchain_gcc_default();
     test_toolchain_msvc_detect();
+    test_toolchain_java_resolve();
+    test_toolchain_no_java_for_c();
 
     printf("\n  Auth:\n");
     test_auth_load_no_creds();
@@ -4022,6 +4103,7 @@ int main(void) {
 
     printf("\n  Build integration:\n");
     test_build_hello();
+    test_build_java_hello();
     /* test_test_phase requires gcc in PATH at runtime — run manually */
 
     printf("\n%d/%d tests passed", tests_passed, tests_run);
