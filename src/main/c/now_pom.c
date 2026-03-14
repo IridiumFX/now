@@ -379,6 +379,9 @@ NOW_API void now_project_free(NowProject *p) {
     free(p->convergence);
     now_strarray_free(&p->private_groups);
     now_strarray_free(&p->modules);
+    free(p->java.main_class);
+    free(p->java.encoding);
+    now_strarray_free(&p->java.classpath);
     if (p->_pasta_root)
         pasta_free((PastaValue *)p->_pasta_root);
     free(p);
@@ -494,20 +497,35 @@ NOW_API NowProject *now_project_load(const char *path, NowResult *result) {
     /* Modules (§1.11) */
     load_strarray(&p->modules, pasta_map_get(root, "modules"));
 
+    /* Java-specific config */
+    const PastaValue *java_map = pasta_map_get(root, "java");
+    if (java_map && pasta_type(java_map) == PASTA_MAP) {
+        p->java.main_class = dup_map_str(java_map, "main_class");
+        p->java.encoding   = dup_map_str(java_map, "encoding");
+        load_strarray(&p->java.classpath, pasta_map_get(java_map, "classpath"));
+    }
+
     /* Apply defaults for sources if not specified */
+    int is_java = 0;
     if (!p->sources.dir && p->langs.count > 0) {
         const char *primary = p->langs.items[0];
         if (strcmp(primary, "c") == 0)
             p->sources.dir = strdup("src/main/c");
         else if (strcmp(primary, "c++") == 0)
             p->sources.dir = strdup("src/main/cpp");
+        else if (strcmp(primary, "java") == 0) {
+            p->sources.dir = strdup("src/main/java");
+            is_java = 1;
+        }
         else
             p->sources.dir = strdup("src/main");
+    } else if (p->langs.count > 0 && strcmp(p->langs.items[0], "java") == 0) {
+        is_java = 1;
     }
-    if (!p->sources.headers)
+    if (!p->sources.headers && !is_java)
         p->sources.headers = strdup("src/main/include");
     if (!p->tests.dir)
-        p->tests.dir = strdup("src/test/c");
+        p->tests.dir = is_java ? strdup("src/test/java") : strdup("src/test/c");
 
     if (result) {
         result->code = NOW_OK;
@@ -579,19 +597,36 @@ NOW_API NowProject *now_project_load_string(const char *input, size_t len,
     load_strarray(&p->private_groups, pasta_map_get(root, "private_groups"));
     load_strarray(&p->modules, pasta_map_get(root, "modules"));
 
+    /* Java-specific config */
+    {
+        const PastaValue *java_map = pasta_map_get(root, "java");
+        if (java_map && pasta_type(java_map) == PASTA_MAP) {
+            p->java.main_class = dup_map_str(java_map, "main_class");
+            p->java.encoding   = dup_map_str(java_map, "encoding");
+            load_strarray(&p->java.classpath, pasta_map_get(java_map, "classpath"));
+        }
+    }
+
+    int is_java2 = 0;
     if (!p->sources.dir && p->langs.count > 0) {
         const char *primary = p->langs.items[0];
         if (strcmp(primary, "c") == 0)
             p->sources.dir = strdup("src/main/c");
         else if (strcmp(primary, "c++") == 0)
             p->sources.dir = strdup("src/main/cpp");
+        else if (strcmp(primary, "java") == 0) {
+            p->sources.dir = strdup("src/main/java");
+            is_java2 = 1;
+        }
         else
             p->sources.dir = strdup("src/main");
+    } else if (p->langs.count > 0 && strcmp(p->langs.items[0], "java") == 0) {
+        is_java2 = 1;
     }
-    if (!p->sources.headers)
+    if (!p->sources.headers && !is_java2)
         p->sources.headers = strdup("src/main/include");
     if (!p->tests.dir)
-        p->tests.dir = strdup("src/test/c");
+        p->tests.dir = is_java2 ? strdup("src/test/java") : strdup("src/test/c");
 
     if (result) {
         result->code = NOW_OK;

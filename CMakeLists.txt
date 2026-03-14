@@ -47,6 +47,7 @@ add_library(now
     src/main/c/now_advisory.c
     src/main/c/now_auth.c
     src/main/c/now_module.c
+    src/main/c/now_maven.c
     # Alforno (vendored sources — avoids FetchContent conflict with pasta)
     lib/alforno/src/main/c/alforno.c
     lib/alforno/src/main/c/alforno_param.c

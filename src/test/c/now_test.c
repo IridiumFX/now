@@ -2317,6 +2317,248 @@ static void test_module_classify_cppm(void) {
     PASS();
 }
 
+/* ---- Java Language + Maven ---- */
+
+static void test_lang_java_registration(void) {
+    TEST("java: language registered");
+    now_lang_registry_init();
+    const NowLangDef *lang = now_lang_find("java");
+    ASSERT_NOT_NULL(lang);
+    ASSERT_STR(lang->id, "java");
+    ASSERT_STR(lang->name, "Java");
+    ASSERT_EQ((int)lang->type_count, 1);
+    ASSERT_STR(lang->types[0].id, "java-source");
+    PASS();
+}
+
+static void test_lang_java_classify(void) {
+    TEST("java: classify .java as java-source");
+    const char *langs[] = { "java" };
+    const NowLangDef *lang = NULL;
+    const NowLangType *type = now_lang_classify("Main.java", langs, 1, &lang);
+    ASSERT_NOT_NULL(type);
+    ASSERT_STR(type->id, "java-source");
+    ASSERT_STR(type->tool_var, "${javac}");
+    PASS();
+}
+
+static void test_pom_java_fields(void) {
+    TEST("java: POM loads java section");
+    const char *input =
+        "{ group: \"com.example\", artifact: \"myapp\", version: \"1.0.0\","
+        "  langs: [\"java\"], std: \"17\","
+        "  java: { main_class: \"com.example.Main\", encoding: \"UTF-8\" },"
+        "  output: { type: \"jar\" } }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_STR(p->java.main_class, "com.example.Main");
+    ASSERT_STR(p->java.encoding, "UTF-8");
+    now_project_free(p);
+    PASS();
+}
+
+static void test_pom_java_defaults(void) {
+    TEST("java: source/test dirs default to Maven layout");
+    const char *input =
+        "{ group: \"com.example\", artifact: \"myapp\", version: \"1.0.0\","
+        "  langs: [\"java\"] }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_STR(p->sources.dir, "src/main/java");
+    ASSERT_STR(p->tests.dir, "src/test/java");
+    /* Java projects should NOT get a headers directory */
+    ASSERT_NULL(p->sources.headers);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_export_maven_basic(void) {
+    TEST("export:maven: generates valid pom.xml");
+    const char *input =
+        "{ group: \"io.test\", artifact: \"mylib\", version: \"2.0.0\","
+        "  langs: [\"java\"], std: \"17\","
+        "  name: \"My Library\", description: \"A test library\","
+        "  license: \"MIT\","
+        "  output: { type: \"jar\" } }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_pom_out.xml", NOW_TEST_RESOURCES);
+    int rc = now_export_maven(p, ".", outpath, &res);
+    ASSERT_EQ(rc, 0);
+
+    /* Read and check generated XML */
+    FILE *fp = fopen(outpath, "r");
+    ASSERT_NOT_NULL(fp);
+    char buf[4096];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    buf[len] = '\0';
+    fclose(fp);
+
+    ASSERT_NOT_NULL(strstr(buf, "<groupId>io.test</groupId>"));
+    ASSERT_NOT_NULL(strstr(buf, "<artifactId>mylib</artifactId>"));
+    ASSERT_NOT_NULL(strstr(buf, "<version>2.0.0</version>"));
+    ASSERT_NOT_NULL(strstr(buf, "<name>My Library</name>"));
+    ASSERT_NOT_NULL(strstr(buf, "<packaging>jar</packaging>"));
+    ASSERT_NOT_NULL(strstr(buf, "maven.compiler.release"));
+    ASSERT_NOT_NULL(strstr(buf, "17"));
+    ASSERT_NOT_NULL(strstr(buf, "MIT"));
+
+    remove(outpath);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_export_maven_deps(void) {
+    TEST("export:maven: dependency scopes map correctly");
+    const char *input =
+        "{ group: \"io.test\", artifact: \"app\", version: \"1.0.0\","
+        "  langs: [\"java\"], std: \"17\","
+        "  deps: ["
+        "    { id: \"org.slf4j:slf4j-api:2.0.9\" },"
+        "    { id: \"org.junit:junit:5.10.0\", scope: \"test\" },"
+        "    { id: \"com.google:guava:32.0\", optional: true }"
+        "  ] }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_pom_deps.xml", NOW_TEST_RESOURCES);
+    int rc = now_export_maven(p, ".", outpath, &res);
+    ASSERT_EQ(rc, 0);
+
+    FILE *fp = fopen(outpath, "r");
+    ASSERT_NOT_NULL(fp);
+    char buf[8192];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    buf[len] = '\0';
+    fclose(fp);
+
+    ASSERT_NOT_NULL(strstr(buf, "<groupId>org.slf4j</groupId>"));
+    ASSERT_NOT_NULL(strstr(buf, "<artifactId>slf4j-api</artifactId>"));
+    ASSERT_NOT_NULL(strstr(buf, "<scope>test</scope>"));
+    ASSERT_NOT_NULL(strstr(buf, "<optional>true</optional>"));
+
+    remove(outpath);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_export_maven_main_class(void) {
+    TEST("export:maven: executable JAR with main class");
+    const char *input =
+        "{ group: \"io.test\", artifact: \"app\", version: \"1.0.0\","
+        "  langs: [\"java\"], std: \"21\","
+        "  output: { type: \"executable\" },"
+        "  java: { main_class: \"io.test.Main\" } }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_pom_main.xml", NOW_TEST_RESOURCES);
+    int rc = now_export_maven(p, ".", outpath, &res);
+    ASSERT_EQ(rc, 0);
+
+    FILE *fp = fopen(outpath, "r");
+    ASSERT_NOT_NULL(fp);
+    char buf[8192];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    buf[len] = '\0';
+    fclose(fp);
+
+    ASSERT_NOT_NULL(strstr(buf, "maven-jar-plugin"));
+    ASSERT_NOT_NULL(strstr(buf, "<mainClass>io.test.Main</mainClass>"));
+
+    remove(outpath);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_import_maven_basic(void) {
+    TEST("import:maven: parses basic pom.xml");
+    char pompath[512];
+    snprintf(pompath, sizeof(pompath), "%s/pom_basic.xml", NOW_TEST_RESOURCES);
+    NowResult res;
+    NowProject *p = now_import_maven(pompath, &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_STR(p->group, "com.example");
+    ASSERT_STR(p->artifact, "myapp");
+    ASSERT_STR(p->version, "1.2.3");
+    ASSERT_STR(p->name, "My Application");
+    ASSERT_STR(p->description, "A test project");
+    ASSERT_STR(p->url, "https://example.com");
+    ASSERT_STR(p->license, "MIT");
+    ASSERT_STR(p->std, "17");
+    ASSERT_STR(p->java.encoding, "UTF-8");
+    now_project_free(p);
+    PASS();
+}
+
+static void test_import_maven_deps(void) {
+    TEST("import:maven: parses dependencies with scopes");
+    char pompath[512];
+    snprintf(pompath, sizeof(pompath), "%s/pom_deps.xml", NOW_TEST_RESOURCES);
+    NowResult res;
+    NowProject *p = now_import_maven(pompath, &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((int)p->deps.count, 3);
+
+    /* First dep: slf4j-api, compile scope */
+    ASSERT_STR(p->deps.items[0].id, "org.slf4j:slf4j-api:2.0.9");
+    ASSERT_NULL(p->deps.items[0].scope);  /* default compile → no scope stored */
+
+    /* Second dep: junit, test scope, version from property substitution */
+    ASSERT_STR(p->deps.items[1].id, "org.junit.jupiter:junit-jupiter:5.10.0");
+    ASSERT_STR(p->deps.items[1].scope, "test");
+
+    /* Third dep: guava, optional */
+    ASSERT_STR(p->deps.items[2].id, "com.google.guava:guava:32.1.3-jre");
+    ASSERT_EQ(p->deps.items[2].optional, 1);
+
+    /* Repository */
+    ASSERT_EQ((int)p->repos.count, 1);
+    ASSERT_STR(p->repos.items[0].id, "central");
+
+    now_project_free(p);
+    PASS();
+}
+
+static void test_import_maven_roundtrip(void) {
+    TEST("import:maven: roundtrip pom.xml → now.pasta → reload");
+    char pompath[512];
+    snprintf(pompath, sizeof(pompath), "%s/pom_basic.xml", NOW_TEST_RESOURCES);
+    NowResult res;
+    NowProject *p = now_import_maven(pompath, &res);
+    ASSERT_NOT_NULL(p);
+
+    /* Write now.pasta */
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_roundtrip.pasta", NOW_TEST_RESOURCES);
+    int rc = now_import_maven_write(p, outpath, &res);
+    ASSERT_EQ(rc, 0);
+    now_project_free(p);
+
+    /* Re-load and verify */
+    NowProject *p2 = now_project_load(outpath, &res);
+    if (!p2) { fprintf(stderr, "roundtrip reload error: %s\n", res.message); FAIL("p2 is NULL"); return; }
+    ASSERT_STR(p2->group, "com.example");
+    ASSERT_STR(p2->artifact, "myapp");
+    ASSERT_STR(p2->version, "1.2.3");
+    ASSERT_STR(p2->std, "17");
+    ASSERT_EQ((int)p2->langs.count, 1);
+    ASSERT_STR(p2->langs.items[0], "java");
+
+    remove(outpath);
+    now_project_free(p2);
+    PASS();
+}
+
 /* ---- Export ---- */
 
 static void test_export_cmake_basic(void) {
@@ -3754,6 +3996,18 @@ int main(void) {
     test_module_find();
     test_module_bmi_path();
     test_module_classify_cppm();
+
+    printf("\n  Java + Maven:\n");
+    test_lang_java_registration();
+    test_lang_java_classify();
+    test_pom_java_fields();
+    test_pom_java_defaults();
+    test_export_maven_basic();
+    test_export_maven_deps();
+    test_export_maven_main_class();
+    test_import_maven_basic();
+    test_import_maven_deps();
+    test_import_maven_roundtrip();
 
     printf("\n  Export:\n");
     test_export_cmake_basic();

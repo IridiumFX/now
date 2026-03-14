@@ -159,8 +159,10 @@ static void usage(void) {
         "  compile-db   Generate compile_commands.json for IDE/LSP\n"
         "  dep:updates  Check dependencies for newer versions\n"
         "  cache:mirror Mirror artifacts from registry to local cache\n"
-        "  export:cmake Generate CMakeLists.txt from now.pasta\n"
-        "  export:make  Generate Makefile from now.pasta\n"
+        "  export:cmake  Generate CMakeLists.txt from now.pasta\n"
+        "  export:make   Generate Makefile from now.pasta\n"
+        "  export:maven  Generate pom.xml from now.pasta\n"
+        "  import:maven  Convert pom.xml to now.pasta\n"
         "  layers:show  Show layer stack and effective configuration\n"
         "  trust:list   List trusted keys\n"
         "  trust:add    Add key: trust:add <scope> <key> [comment]\n"
@@ -681,6 +683,46 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* import:maven doesn't need an existing now.pasta */
+    if (strcmp(phase, "import:maven") == 0) {
+        const char *pom_file = "pom.xml";
+        for (int a = 2; a < argc - 1; a++) {
+            if (strcmp(argv[a], "--file") == 0) {
+                pom_file = argv[a + 1];
+                break;
+            }
+        }
+        char *pom_path = now_path_join(cwd, pom_file);
+        NowResult result;
+        memset(&result, 0, sizeof(result));
+        if (!pom_path) {
+            fprintf(stderr, "error: cannot construct pom.xml path\n");
+            return 1;
+        }
+        NowProject *imported = now_import_maven(pom_path, &result);
+        if (!imported) {
+            fprintf(stderr, "error: %s\n", result.message);
+            free(pom_path);
+            return 1;
+        }
+        char *out = now_path_join(cwd, "now.pasta");
+        int rc = 0;
+        if (!out) {
+            fprintf(stderr, "error: cannot construct output path\n");
+            rc = 1;
+        } else {
+            rc = now_import_maven_write(imported, out, &result);
+            if (rc != 0)
+                fprintf(stderr, "error: %s\n", result.message);
+            else
+                printf("imported %s -> %s\n", pom_file, out);
+            free(out);
+        }
+        now_project_free(imported);
+        free(pom_path);
+        return rc;
+    }
+
     /* Find now.pasta in current directory */
     char *descriptor = now_path_join(cwd, "now.pasta");
     if (!descriptor || !now_path_exists(descriptor)) {
@@ -822,6 +864,20 @@ int main(int argc, char *argv[]) {
             rc = 1;
         } else {
             rc = now_export_make(project, cwd, out, &result);
+            if (rc != 0)
+                fprintf(stderr, "error: %s\n", result.message);
+            else
+                printf("wrote %s\n", out);
+            free(out);
+        }
+
+    } else if (strcmp(phase, "export:maven") == 0) {
+        char *out = now_path_join(cwd, "pom.xml");
+        if (!out) {
+            fprintf(stderr, "error: cannot construct output path\n");
+            rc = 1;
+        } else {
+            rc = now_export_maven(project, cwd, out, &result);
             if (rc != 0)
                 fprintf(stderr, "error: %s\n", result.message);
             else

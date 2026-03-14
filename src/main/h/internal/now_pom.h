@@ -117,6 +117,16 @@ NOW_API void now_pluginarray_init(NowPluginArray *a);
 NOW_API int  now_pluginarray_push(NowPluginArray *a);  /* push empty, returns index or -1 */
 NOW_API void now_pluginarray_free(NowPluginArray *a);
 
+/* Allocate a zero-initialized NowProject */
+NOW_API NowProject *now_project_new(void);
+
+/* Java-specific configuration */
+typedef struct {
+    char *main_class;        /* entry point for executable JARs */
+    char *encoding;          /* source encoding (default: UTF-8) */
+    NowStrArray classpath;   /* additional classpath entries */
+} NowJava;
+
 /* The full Project Object Model (matches forward decl in now.h) */
 struct NowProject {
     /* Identity (§1.1) */
@@ -157,6 +167,9 @@ struct NowProject {
 
     /* Plugins (§10) */
     NowPluginArray plugins;
+
+    /* Java-specific (when langs includes "java") */
+    NowJava java;
 
     /* Workspace (§1.11) */
     NowStrArray modules;

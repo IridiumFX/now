@@ -161,6 +161,28 @@ static const NowLangDef lang_nasm = {
     .type_count = sizeof(nasm_types) / sizeof(nasm_types[0])
 };
 
+/* Java language */
+static const char *java_source_exts[] = { ".java", NULL };
+
+static const NowLangType java_types[] = {
+    {
+        .id         = "java-source",
+        .extensions = java_source_exts,
+        .role       = NOW_ROLE_SOURCE,
+        .tool_var   = "${javac}",
+        .produces   = NOW_PRODUCES_OBJECT,
+        .output_ext = ".class"
+    }
+};
+
+static const NowLangDef lang_java = {
+    .id         = "java",
+    .name       = "Java",
+    .std_flag   = "--release ${std}",
+    .types      = java_types,
+    .type_count = sizeof(java_types) / sizeof(java_types[0])
+};
+
 /* ---- Registry ---- */
 
 static const NowLangDef *registry[] = {
@@ -168,6 +190,7 @@ static const NowLangDef *registry[] = {
     &lang_cxx,
     &lang_gas,
     &lang_nasm,
+    &lang_java,
     NULL
 };
 
