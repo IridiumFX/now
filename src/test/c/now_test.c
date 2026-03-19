@@ -33,6 +33,7 @@
 #include "now_auth.h"
 #include "now_module.h"
 #include "now_cache.h"
+#include "now_sbom.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -380,6 +381,209 @@ static void test_fs_obj_path(void) {
         return;
     }
     free(obj);
+    PASS();
+}
+
+/* ---- SBOM generation ---- */
+
+static void test_sbom_to_json_basic(void) {
+    TEST("sbom: generate JSON from project");
+    const char *pasta =
+        "{ group: \"com.example\", artifact: \"demo\", version: \"1.0.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"executable\", name: \"demo\" } }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    /* Check CycloneDX envelope */
+    if (!strstr(json, "\"bomFormat\": \"CycloneDX\"")) { free(json); now_project_free(p); FAIL("missing bomFormat"); return; }
+    if (!strstr(json, "\"specVersion\": \"1.5\"")) { free(json); now_project_free(p); FAIL("missing specVersion"); return; }
+    if (!strstr(json, "urn:uuid:")) { free(json); now_project_free(p); FAIL("missing serialNumber"); return; }
+    /* Check metadata component */
+    if (!strstr(json, "\"group\": \"com.example\"")) { free(json); now_project_free(p); FAIL("missing group"); return; }
+    if (!strstr(json, "\"name\": \"demo\"")) { free(json); now_project_free(p); FAIL("missing artifact"); return; }
+    if (!strstr(json, "\"version\": \"1.0.0\"")) { free(json); now_project_free(p); FAIL("missing version"); return; }
+    if (!strstr(json, "\"type\": \"application\"")) { free(json); now_project_free(p); FAIL("missing type application"); return; }
+    /* Check purl */
+    if (!strstr(json, "pkg:now/com.example/demo@1.0.0")) { free(json); now_project_free(p); FAIL("missing purl"); return; }
+    /* Check tool */
+    if (!strstr(json, "\"vendor\": \"now\"")) { free(json); now_project_free(p); FAIL("missing tool vendor"); return; }
+
+    free(json);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_library_type(void) {
+    TEST("sbom: library project type");
+    const char *pasta =
+        "{ group: \"io.lib\", artifact: \"utils\", version: \"2.0.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"shared\", name: \"utils\" } }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    if (!strstr(json, "\"type\": \"library\"")) { free(json); now_project_free(p); FAIL("should be library"); return; }
+
+    free(json);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_with_deps(void) {
+    TEST("sbom: declared deps in components");
+    const char *pasta =
+        "{ group: \"com.app\", artifact: \"main\", version: \"1.0.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"executable\", name: \"main\" },"
+        "  deps: ["
+        "    { id: \"org.lib:crypto:^1.2.0\" },"
+        "    { id: \"org.lib:net:~2.0.0\" }"
+        "  ] }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    /* Should have component entries for declared deps */
+    if (!strstr(json, "\"group\": \"org.lib\"")) { free(json); now_project_free(p); FAIL("missing dep group"); return; }
+    if (!strstr(json, "\"name\": \"crypto\"")) { free(json); now_project_free(p); FAIL("missing crypto dep"); return; }
+    if (!strstr(json, "\"name\": \"net\"")) { free(json); now_project_free(p); FAIL("missing net dep"); return; }
+    /* Check dependencies section */
+    if (!strstr(json, "\"dependencies\":")) { free(json); now_project_free(p); FAIL("missing dependencies"); return; }
+
+    free(json);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_with_license(void) {
+    TEST("sbom: license field in metadata");
+    const char *pasta =
+        "{ group: \"com.oss\", artifact: \"lib\", version: \"1.0.0\","
+        "  langs: [\"c\"], std: \"c11\", license: \"MIT\","
+        "  output: { type: \"static\", name: \"lib\" } }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    if (!strstr(json, "\"id\": \"MIT\"")) { free(json); now_project_free(p); FAIL("missing license"); return; }
+
+    free(json);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_generate_file(void) {
+    TEST("sbom: generate to file");
+    const char *pasta =
+        "{ group: \"com.test\", artifact: \"sbomtest\", version: \"0.1.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"executable\", name: \"sbomtest\" } }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_sbom_output.json",
+             NOW_TEST_RESOURCES);
+
+    int rc = now_sbom_generate(p, NULL, outpath,
+                                NOW_SBOM_CYCLONEDX_JSON, &res);
+    ASSERT_EQ(rc, 0);
+
+    /* Read back and verify */
+    FILE *fp = fopen(outpath, "r");
+    if (!fp) { now_project_free(p); FAIL("cannot read output"); return; }
+    fseek(fp, 0, SEEK_END);
+    long flen = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)flen + 1);
+    fread(buf, 1, (size_t)flen, fp);
+    buf[flen] = '\0';
+    fclose(fp);
+
+    if (!strstr(buf, "\"bomFormat\": \"CycloneDX\"")) { free(buf); now_project_free(p); FAIL("invalid output"); return; }
+    if (!strstr(buf, "\"name\": \"sbomtest\"")) { free(buf); now_project_free(p); FAIL("missing artifact in file"); return; }
+
+    free(buf);
+    remove(outpath);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_null_project(void) {
+    TEST("sbom: null project returns NULL");
+    char *json = now_sbom_to_json(NULL, NULL);
+    ASSERT_NULL(json);
+    PASS();
+}
+
+static void test_sbom_scope_mapping(void) {
+    TEST("sbom: scope mapping (test→excluded, provided→optional)");
+    const char *pasta =
+        "{ group: \"com.app\", artifact: \"app\", version: \"1.0.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"executable\", name: \"app\" },"
+        "  deps: ["
+        "    { id: \"org.test:mock:1.0.0\", scope: \"test\" },"
+        "    { id: \"org.api:spec:2.0.0\", scope: \"provided\" }"
+        "  ] }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    if (!strstr(json, "\"scope\": \"excluded\"")) { free(json); now_project_free(p); FAIL("test scope not mapped to excluded"); return; }
+    if (!strstr(json, "\"scope\": \"optional\"")) { free(json); now_project_free(p); FAIL("provided scope not mapped to optional"); return; }
+
+    free(json);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_sbom_no_deps(void) {
+    TEST("sbom: project with no deps");
+    const char *pasta =
+        "{ group: \"com.solo\", artifact: \"alone\", version: \"1.0.0\","
+        "  langs: [\"c\"], std: \"c11\","
+        "  output: { type: \"executable\", name: \"alone\" } }";
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    NowProject *p = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(p);
+
+    char *json = now_sbom_to_json(p, NULL);
+    ASSERT_NOT_NULL(json);
+
+    /* components array should be empty */
+    if (!strstr(json, "\"components\": [")) { free(json); now_project_free(p); FAIL("missing components"); return; }
+    /* dependencies should still have root entry */
+    if (!strstr(json, "\"dependencies\": [")) { free(json); now_project_free(p); FAIL("missing dependencies"); return; }
+
+    free(json);
+    now_project_free(p);
     PASS();
 }
 
@@ -5557,6 +5761,16 @@ int main(void) {
     test_manifest_set_deps();
     test_manifest_deps_roundtrip();
     test_manifest_needs_rebuild_dep_changed();
+
+    printf("\n  SBOM generation:\n");
+    test_sbom_to_json_basic();
+    test_sbom_library_type();
+    test_sbom_with_deps();
+    test_sbom_with_license();
+    test_sbom_generate_file();
+    test_sbom_null_project();
+    test_sbom_scope_mapping();
+    test_sbom_no_deps();
 
     printf("\n  Build integration:\n");
     test_build_hello();

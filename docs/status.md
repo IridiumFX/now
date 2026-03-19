@@ -56,6 +56,7 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_advisory.c` | `now_advisory.h` | Advisory guards: advisory DB loading, severity checking, override mechanism, dep checking |
 | `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external process invocation with stdin/stdout Pasta IPC |
 | `now_plugin_registry.c` | `now_plugin_registry.h` | Plugin registry: manifest parsing, search, install, list, info, binary discovery |
+| `now_sbom.c` | `now_sbom.h` | SBOM generation: CycloneDX 1.5 JSON, lock file integration, purl, dependency graph |
 | `now_workspace.c` | `now_workspace.h` | Workspace/module system: DAG construction, Kahn's topo sort, wave build |
 | `now_cache.c` | `now_cache.h` | Content-addressable build cache: SHA-256 key, two-level sharding, header-aware (depfile parsing, ccache-style two-level key) |
 | `main.c` | — | CLI entry point: phase dispatch, option parsing |
@@ -550,6 +551,23 @@ Zero-lock-in escape hatch — generates a standalone `BUILD.bazel` from `now.pas
 - **Dependencies**: listed as comments (cannot auto-resolve across build systems)
 - **5 tests**: basic cc_library, cc_binary, static linkstatic, C++ globs, deps comments
 
+### 25d. SBOM Generation (`now sbom`)
+
+CycloneDX 1.5 JSON generation for software supply-chain compliance:
+
+- **`now sbom`**: writes `target/sbom.cdx.json` (or `-o` for custom path, stdout if no project dir)
+- **CycloneDX 1.5**: `bomFormat`, `specVersion`, `serialNumber` (UUID v4), `version`
+- **Metadata**: ISO 8601 timestamp, tool identification (`now` version), root component
+- **Component types**: `application` (executable), `library` (shared/static/header-only)
+- **Package URL**: `pkg:now/{group}/{artifact}@{version}` format
+- **License**: SPDX license ID from `now.pasta` `license` field
+- **Lock file integration**: if `target/now.lock.pasta` exists, uses resolved versions + SHA-256 hashes
+- **Declared deps fallback**: without lock file, lists declared deps from `now.pasta`
+- **Scope mapping**: compile→required, test→excluded, provided→optional
+- **Dependency graph**: `dependencies` section with transitive dep relationships from lock file
+- **SHA-256 hashes**: per-component hashes from lock file entries
+- **8 tests**: basic JSON, library type, deps, license, file output, null safety, scope mapping, no-deps
+
 ### 26. Reproducible Builds — Guide Step 20
 
 Determinism measures for bit-identical builds across machines and time:
@@ -643,7 +661,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-257 tests across all modules:
+265 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -668,6 +686,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Workspace | 5 | Detect workspace root, single project not workspace, NULL safe, init modules/graph, topo sort ordering |
 | Plugins | 6 | Built-in detection, POM loading, no-plugins no-op, result lifecycle, unknown builtin error, now:version generation |
 | Plugin Registry | 10 | Manifest parse (full/minimal/missing-id/missing-file), info_free null safe, find_binary missing, list empty, search no-match, install bad registry, manifest roundtrip |
+| SBOM | 8 | Basic JSON, library type, deps in components, license field, file output, null safety, scope mapping, no-deps |
 | CI | 6 | Exit code mapping, env detection, JSON/Pasta/text build format, JSON test format |
 | Dep confusion | 7 | Exact match, dotted child, no false positive, multiple prefixes, NULL-safe, POM load, procure fail |
 | Layers | 8 | Stack init, baseline sections, file load, open merge, locked audit, !exclude:, audit format, push project |
@@ -684,7 +703,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 257 tests pass (247 in CI — build integration test requires gcc in PATH at runtime).
+All 265 tests pass (255 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -767,6 +786,7 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | E4 | `now export:meson` | **DONE** | Meson build generation: project(), executable/static/shared/header-only, copts, linkopts, test target, install |
 | E5 | `now export:bazel` | **DONE** | Bazel BUILD generation: cc_binary/cc_library/cc_test, COPTS/LINKOPTS, glob() patterns, linkstatic |
 | E6 | Plugin registry | **DONE** | `now plugin:list/search/install/info`, manifest parsing, external process invocation, 10 tests |
+| E7 | SBOM generation | **DONE** | `now sbom` CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph, 8 tests |
 
 ### Post-v1
 

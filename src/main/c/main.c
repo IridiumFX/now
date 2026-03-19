@@ -25,6 +25,7 @@
 #include "now_layer.h"
 #include "now_export.h"
 #include "now_plugin_registry.h"
+#include "now_sbom.h"
 #include "now_trust.h"
 #include "now_repro.h"
 #include "now_advisory.h"
@@ -173,6 +174,7 @@ static void usage(void) {
         "  plugin:search Search for plugins by keyword\n"
         "  plugin:install Install a plugin from registry\n"
         "  plugin:info   Show plugin details\n"
+        "  sbom          Generate CycloneDX 1.5 SBOM (JSON)\n"
         "  layers:show  Show layer stack and effective configuration\n"
         "  trust:list   List trusted keys\n"
         "  trust:add    Add key: trust:add <scope> <key> [comment]\n"
@@ -1067,6 +1069,31 @@ int main(int argc, char *argv[]) {
                 now_coord_free(&coord);
             }
         }
+
+    } else if (strcmp(phase, "sbom") == 0) {
+        /* Determine output path: --output flag or default target/sbom.cdx.json */
+        const char *sbom_out = NULL;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+                sbom_out = argv[++i];
+        }
+        char *sbom_default = NULL;
+        if (!sbom_out) {
+            char *target_dir = now_path_join(cwd, "target");
+            if (target_dir) {
+                now_mkdir_p(target_dir);
+                sbom_default = now_path_join(target_dir, "sbom.cdx.json");
+                free(target_dir);
+                sbom_out = sbom_default;
+            }
+        }
+        rc = now_sbom_generate(project, cwd, sbom_out,
+                                NOW_SBOM_CYCLONEDX_JSON, &result);
+        if (rc != 0)
+            fprintf(stderr, "error: %s\n", result.message);
+        else if (sbom_out)
+            printf("wrote %s\n", sbom_out);
+        free(sbom_default);
 
     } else if (strcmp(phase, "layers:show") == 0) {
         NowLayerStack stack;

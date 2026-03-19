@@ -76,7 +76,7 @@ adopting a build tool.
 |---|------|-----------|
 | 3.1 | Maven import/export | DONE — `now export:maven` + `now import:maven`, mini XML parser, roundtrip pom.xml ↔ now.pasta |
 | 3.2 | Distributed/remote build | Large codebases need it, differentiator enterprises pay for |
-| 3.3 | SBOM generation | Compliance requirement, often a checkbox for procurement |
+| 3.3 | SBOM generation | DONE — `now sbom` generates CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph |
 | 3.4 | LDAP/SSO auth for registries | Enterprise identity, Cookbook integration |
 | 3.5 | Audit logging | Who published what, when, approved by whom — regulated industries need this |
 

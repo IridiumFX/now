@@ -51,6 +51,7 @@ add_library(now
     src/main/c/now_ed25519.c
     src/main/c/now_cache.c
     src/main/c/now_plugin_registry.c
+    src/main/c/now_sbom.c
     # Alforno (vendored sources — avoids FetchContent conflict with pasta)
     lib/alforno/src/main/c/alforno.c
     lib/alforno/src/main/c/alforno_param.c
