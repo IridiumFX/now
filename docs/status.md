@@ -54,7 +54,8 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_trust.c` | `now_trust.h` | Signing and trust: trust store, scope matching, policy, minisign verification |
 | `now_repro.c` | `now_repro.h` | Reproducible builds: timebase, prefix maps, sorted inputs, date macro neutralization |
 | `now_advisory.c` | `now_advisory.h` | Advisory guards: advisory DB loading, severity checking, override mechanism, dep checking |
-| `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external IPC protocol |
+| `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external process invocation with stdin/stdout Pasta IPC |
+| `now_plugin_registry.c` | `now_plugin_registry.h` | Plugin registry: manifest parsing, search, install, list, info, binary discovery |
 | `now_workspace.c` | `now_workspace.h` | Workspace/module system: DAG construction, Kahn's topo sort, wave build |
 | `now_cache.c` | `now_cache.h` | Content-addressable build cache: SHA-256 key, two-level sharding, header-aware (depfile parsing, ccache-style two-level key) |
 | `main.c` | — | CLI entry point: phase dispatch, option parsing |
@@ -335,9 +336,19 @@ Plugin system with lifecycle hook dispatch and built-in code generators:
   - Chain stops on first error (`status: "error"` or non-zero exit)
 - **Generate phase**: runs after procure, before compile; collects `sources`, `includes`, `defines`
   from plugins and injects them into the build context
-- **External plugin IPC**: stdin/stdout Pasta protocol (handshake + hook payload → response)
+- **External plugin invocation**: full process spawning with stdin/stdout Pasta IPC
+  - Windows: `CreateProcess()` with pipe handles, read/write Pasta payload
+  - POSIX: `fork() + execl()` with `pipe()` for stdin/stdout
   - Input: `hook`, `project`, `basedir`, `target`, `config`
   - Output: `status` (ok/warn/error), `sources`, `includes`, `defines`, `messages`
+  - Timeout support (default 30s, configurable via `timeout:` field)
+  - Coordinate-based binary lookup: `~/.now/repo/{group}/{artifact}/{version}/bin/{artifact}`
+- **Plugin registry** (`now_plugin_registry.c/h`):
+  - `now plugin:list` — scan `~/.now/repo/` for installed plugins with `plugin.pasta` manifests
+  - `now plugin:search <query>` — case-insensitive substring match on id/name/description
+  - `now plugin:install <g:a:v>` — resolve from registry, download .basta, extract, validate manifest
+  - `now plugin:info <g:a:v>` — show plugin manifest details (hooks, capabilities, network, binary path)
+  - `plugin.pasta` manifest parsing: id, name, description, protocol, hooks, requires, optional, network, requires_now
 - **CLI**: `now generate` runs generate phase standalone; `now build/compile/test` run it automatically
 
 ### 19. CI Integration — Guide Step 22
@@ -632,7 +643,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-247 tests across all modules:
+257 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -656,6 +667,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Publish | 2 | Missing identity rejected, missing package rejected |
 | Workspace | 5 | Detect workspace root, single project not workspace, NULL safe, init modules/graph, topo sort ordering |
 | Plugins | 6 | Built-in detection, POM loading, no-plugins no-op, result lifecycle, unknown builtin error, now:version generation |
+| Plugin Registry | 10 | Manifest parse (full/minimal/missing-id/missing-file), info_free null safe, find_binary missing, list empty, search no-match, install bad registry, manifest roundtrip |
 | CI | 6 | Exit code mapping, env detection, JSON/Pasta/text build format, JSON test format |
 | Dep confusion | 7 | Exact match, dotted child, no false positive, multiple prefixes, NULL-safe, POM load, procure fail |
 | Layers | 8 | Stack init, baseline sections, file load, open merge, locked audit, !exclude:, audit format, push project |
@@ -672,7 +684,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 247 tests pass (237 in CI — build integration test requires gcc in PATH at runtime).
+All 257 tests pass (247 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -754,6 +766,7 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | E2 | `now export:make` | **DONE** | Makefile generation: shared/static/executable, C/C++, deps as comments, test+install+clean |
 | E4 | `now export:meson` | **DONE** | Meson build generation: project(), executable/static/shared/header-only, copts, linkopts, test target, install |
 | E5 | `now export:bazel` | **DONE** | Bazel BUILD generation: cc_binary/cc_library/cc_test, COPTS/LINKOPTS, glob() patterns, linkstatic |
+| E6 | Plugin registry | **DONE** | `now plugin:list/search/install/info`, manifest parsing, external process invocation, 10 tests |
 
 ### Post-v1
 

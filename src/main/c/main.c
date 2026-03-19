@@ -24,6 +24,7 @@
 #include "now_arch.h"
 #include "now_layer.h"
 #include "now_export.h"
+#include "now_plugin_registry.h"
 #include "now_trust.h"
 #include "now_repro.h"
 #include "now_advisory.h"
@@ -168,6 +169,10 @@ static void usage(void) {
         "  export:bazel  Generate BUILD.bazel from now.pasta\n"
         "  export:maven  Generate pom.xml from now.pasta\n"
         "  import:maven  Convert pom.xml to now.pasta\n"
+        "  plugin:list   List installed plugins\n"
+        "  plugin:search Search for plugins by keyword\n"
+        "  plugin:install Install a plugin from registry\n"
+        "  plugin:info   Show plugin details\n"
         "  layers:show  Show layer stack and effective configuration\n"
         "  trust:list   List trusted keys\n"
         "  trust:add    Add key: trust:add <scope> <key> [comment]\n"
@@ -930,6 +935,137 @@ int main(int argc, char *argv[]) {
             else
                 printf("wrote %s\n", out);
             free(out);
+        }
+
+    } else if (strcmp(phase, "plugin:list") == 0) {
+        NowPluginInfo *plugins = NULL;
+        size_t pcount = 0;
+        rc = now_plugin_list(NULL, &plugins, &pcount, &result);
+        if (rc != 0) {
+            fprintf(stderr, "error: %s\n", result.message);
+        } else if (pcount == 0) {
+            printf("No plugins installed.\n");
+        } else {
+            printf("Installed plugins (%zu):\n\n", pcount);
+            for (size_t i = 0; i < pcount; i++) {
+                printf("  %s", plugins[i].id);
+                if (plugins[i].name)
+                    printf(" — %s", plugins[i].name);
+                if (plugins[i].description)
+                    printf("\n    %s", plugins[i].description);
+                if (plugins[i].hooks.count > 0) {
+                    printf("\n    hooks:");
+                    for (size_t h = 0; h < plugins[i].hooks.count; h++)
+                        printf(" %s", plugins[i].hooks.items[h]);
+                }
+                printf("\n\n");
+                now_plugin_info_free(&plugins[i]);
+            }
+            free(plugins);
+        }
+
+    } else if (strcmp(phase, "plugin:search") == 0) {
+        const char *query = (argc > 2) ? argv[2] : NULL;
+        NowPluginInfo *plugins = NULL;
+        size_t pcount = 0;
+        rc = now_plugin_search(query, NULL, &plugins, &pcount, &result);
+        if (rc != 0) {
+            fprintf(stderr, "error: %s\n", result.message);
+        } else if (pcount == 0) {
+            printf("No matching plugins found.\n");
+        } else {
+            printf("Found %zu plugin(s):\n\n", pcount);
+            for (size_t i = 0; i < pcount; i++) {
+                printf("  %s", plugins[i].id);
+                if (plugins[i].name)
+                    printf(" — %s", plugins[i].name);
+                if (plugins[i].description)
+                    printf("\n    %s", plugins[i].description);
+                printf("\n\n");
+                now_plugin_info_free(&plugins[i]);
+            }
+            free(plugins);
+        }
+
+    } else if (strcmp(phase, "plugin:install") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: now plugin:install <group:artifact:version>\n");
+            rc = 1;
+        } else {
+            NowCoordinate coord;
+            if (now_coord_parse(argv[2], &coord) != 0) {
+                fprintf(stderr, "error: invalid coordinate '%s' "
+                        "(expected group:artifact:version)\n", argv[2]);
+                rc = 1;
+            } else {
+                /* Use first project repo or default */
+                const char *reg_url = repo_url;
+                if (!reg_url && project && project->repos.count > 0)
+                    reg_url = project->repos.items[0].url;
+                if (!reg_url)
+                    reg_url = "https://registry.now.dev";
+
+                rc = now_plugin_install(reg_url, coord.group, coord.artifact,
+                                          coord.version, NULL, verbose, &result);
+                if (rc != 0)
+                    fprintf(stderr, "error: %s\n", result.message);
+                else
+                    printf("installed %s:%s:%s\n",
+                           coord.group, coord.artifact, coord.version);
+                now_coord_free(&coord);
+            }
+        }
+
+    } else if (strcmp(phase, "plugin:info") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: now plugin:info <group:artifact:version>\n");
+            rc = 1;
+        } else {
+            NowCoordinate coord;
+            if (now_coord_parse(argv[2], &coord) != 0) {
+                fprintf(stderr, "error: invalid coordinate '%s'\n", argv[2]);
+                rc = 1;
+            } else {
+                NowPluginInfo info;
+                rc = now_plugin_get_info(NULL, coord.group, coord.artifact,
+                                           coord.version, &info, &result);
+                if (rc != 0) {
+                    fprintf(stderr, "error: %s\n", result.message);
+                } else {
+                    printf("Plugin: %s\n", info.id);
+                    if (info.name)
+                        printf("Name: %s\n", info.name);
+                    if (info.description)
+                        printf("Description: %s\n", info.description);
+                    if (info.protocol)
+                        printf("Protocol: %s\n", info.protocol);
+                    if (info.requires_now)
+                        printf("Requires now: %s\n", info.requires_now);
+                    if (info.hooks.count > 0) {
+                        printf("Hooks:");
+                        for (size_t h = 0; h < info.hooks.count; h++)
+                            printf(" %s", info.hooks.items[h]);
+                        printf("\n");
+                    }
+                    if (info.requires.count > 0) {
+                        printf("Capabilities:");
+                        for (size_t r = 0; r < info.requires.count; r++)
+                            printf(" %s", info.requires.items[r]);
+                        printf("\n");
+                    }
+                    if (info.network_required)
+                        printf("Network: required\n");
+                    char *bin = now_plugin_find_binary(NULL, coord.group,
+                                                        coord.artifact,
+                                                        coord.version);
+                    if (bin) {
+                        printf("Binary: %s\n", bin);
+                        free(bin);
+                    }
+                    now_plugin_info_free(&info);
+                }
+                now_coord_free(&coord);
+            }
         }
 
     } else if (strcmp(phase, "layers:show") == 0) {

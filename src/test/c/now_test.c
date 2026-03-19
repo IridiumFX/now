@@ -22,6 +22,7 @@
 #include "now_package.h"
 #include "now_workspace.h"
 #include "now_plugin.h"
+#include "now_plugin_registry.h"
 #include "now_ci.h"
 #include "now_layer.h"
 #include "now_arch.h"
@@ -1733,6 +1734,178 @@ static void test_plugin_unknown_builtin(void) {
     now_plugin_result_free(&out);
     if (rc == 0) { FAIL("should have failed"); return; }
     ASSERT_EQ(res.code, NOW_ERR_NOT_FOUND);
+    PASS();
+}
+
+/* ---- Plugin registry ---- */
+
+static void test_plugin_manifest_parse_string(void) {
+    TEST("plugin registry: parse manifest from string");
+    const char *input =
+        "{ id: \"org.now.plugins:protobuf-c:1.0.0\","
+        "  name: \"Protobuf C Generator\","
+        "  description: \"Generates C sources from .proto files\","
+        "  protocol: \"1.0.0\","
+        "  hooks: [\"generate\"],"
+        "  requires: [\"source-inject\", \"fail-build\"],"
+        "  network: { required: true },"
+        "  requires_now: \">=1.0.0\" }";
+    NowPluginInfo info;
+    NowResult res;
+    int rc = now_plugin_manifest_parse_string(input, strlen(input), &info, &res);
+    ASSERT_EQ(rc, 0);
+    if (!info.id || strcmp(info.id, "org.now.plugins:protobuf-c:1.0.0") != 0) {
+        FAIL("wrong id");
+        now_plugin_info_free(&info);
+        return;
+    }
+    if (!info.name || strcmp(info.name, "Protobuf C Generator") != 0) {
+        FAIL("wrong name");
+        now_plugin_info_free(&info);
+        return;
+    }
+    if (!info.protocol || strcmp(info.protocol, "1.0.0") != 0) {
+        FAIL("wrong protocol");
+        now_plugin_info_free(&info);
+        return;
+    }
+    ASSERT_EQ(info.hooks.count, (size_t)1);
+    ASSERT_EQ(info.requires.count, (size_t)2);
+    ASSERT_EQ(info.network_required, 1);
+    if (!info.requires_now || strcmp(info.requires_now, ">=1.0.0") != 0) {
+        FAIL("wrong requires_now");
+        now_plugin_info_free(&info);
+        return;
+    }
+    now_plugin_info_free(&info);
+    PASS();
+}
+
+static void test_plugin_manifest_parse_minimal(void) {
+    TEST("plugin registry: parse minimal manifest");
+    const char *input = "{ id: \"org.now.plugins:simple:0.1.0\", protocol: \"1.0.0\" }";
+    NowPluginInfo info;
+    NowResult res;
+    int rc = now_plugin_manifest_parse_string(input, strlen(input), &info, &res);
+    ASSERT_EQ(rc, 0);
+    if (!info.id || strcmp(info.id, "org.now.plugins:simple:0.1.0") != 0) {
+        FAIL("wrong id");
+        now_plugin_info_free(&info);
+        return;
+    }
+    ASSERT_EQ(info.hooks.count, (size_t)0);
+    ASSERT_EQ(info.requires.count, (size_t)0);
+    ASSERT_EQ(info.network_required, 0);
+    now_plugin_info_free(&info);
+    PASS();
+}
+
+static void test_plugin_manifest_missing_id(void) {
+    TEST("plugin registry: manifest without id fails");
+    const char *input = "{ name: \"No ID\", protocol: \"1.0.0\" }";
+    NowPluginInfo info;
+    NowResult res;
+    int rc = now_plugin_manifest_parse_string(input, strlen(input), &info, &res);
+    if (rc == 0) { FAIL("should have failed"); now_plugin_info_free(&info); return; }
+    ASSERT_EQ(res.code, NOW_ERR_SCHEMA);
+    PASS();
+}
+
+static void test_plugin_manifest_parse_file_missing(void) {
+    TEST("plugin registry: missing manifest file returns -1");
+    NowPluginInfo info;
+    NowResult res;
+    int rc = now_plugin_manifest_parse("/nonexistent/plugin.pasta", &info, &res);
+    if (rc == 0) { FAIL("should have failed"); now_plugin_info_free(&info); return; }
+    ASSERT_EQ(res.code, NOW_ERR_NOT_FOUND);
+    PASS();
+}
+
+static void test_plugin_info_free_null_safe(void) {
+    TEST("plugin registry: info_free on NULL is safe");
+    now_plugin_info_free(NULL);
+    NowPluginInfo info;
+    memset(&info, 0, sizeof(info));
+    now_plugin_info_free(&info);
+    PASS();
+}
+
+static void test_plugin_find_binary_missing(void) {
+    TEST("plugin registry: find_binary returns NULL for missing");
+    char *path = now_plugin_find_binary("/nonexistent/repo",
+                                          "org.test", "myplugin", "1.0.0");
+    if (path != NULL) { FAIL("should be NULL"); free(path); return; }
+    PASS();
+}
+
+static void test_plugin_list_empty_repo(void) {
+    TEST("plugin registry: list on empty repo returns 0");
+    NowPluginInfo *plugins = NULL;
+    size_t count = 0;
+    NowResult res;
+    int rc = now_plugin_list("/nonexistent/repo", &plugins, &count, &res);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(count, (size_t)0);
+    PASS();
+}
+
+static void test_plugin_search_no_match(void) {
+    TEST("plugin registry: search with no match returns 0");
+    NowPluginInfo *plugins = NULL;
+    size_t count = 0;
+    NowResult res;
+    int rc = now_plugin_search("zzz_nonexistent", "/nonexistent/repo",
+                                &plugins, &count, &res);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(count, (size_t)0);
+    PASS();
+}
+
+static void test_plugin_install_bad_registry(void) {
+    TEST("plugin registry: install from bad registry fails");
+    NowResult res;
+    int rc = now_plugin_install("http://127.0.0.1:1",
+                                  "org.test", "myplugin", "1.0.0",
+                                  "/tmp/test_repo", 0, &res);
+    if (rc == 0) { FAIL("should have failed"); return; }
+    PASS();
+}
+
+static void test_plugin_manifest_roundtrip(void) {
+    TEST("plugin registry: write + parse manifest file roundtrip");
+    const char *input =
+        "{ id: \"org.now.plugins:roundtrip:2.0.0\","
+        "  name: \"Roundtrip Test\","
+        "  description: \"A test plugin\","
+        "  protocol: \"1.0.0\","
+        "  hooks: [\"pre-compile\", \"post-compile\"],"
+        "  requires: [\"fail-build\"],"
+        "  network: { required: false } }";
+
+    /* Write to temp file */
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/test_plugin_manifest.pasta",
+             NOW_TEST_RESOURCES);
+    FILE *fp = fopen(outpath, "w");
+    ASSERT_NOT_NULL(fp);
+    fwrite(input, 1, strlen(input), fp);
+    fclose(fp);
+
+    /* Parse back */
+    NowPluginInfo info;
+    NowResult res;
+    int rc = now_plugin_manifest_parse(outpath, &info, &res);
+    remove(outpath);
+    ASSERT_EQ(rc, 0);
+    if (!info.id || strcmp(info.id, "org.now.plugins:roundtrip:2.0.0") != 0) {
+        FAIL("wrong id after roundtrip");
+        now_plugin_info_free(&info);
+        return;
+    }
+    ASSERT_EQ(info.hooks.count, (size_t)2);
+    ASSERT_EQ(info.requires.count, (size_t)1);
+    ASSERT_EQ(info.network_required, 0);
+    now_plugin_info_free(&info);
     PASS();
 }
 
@@ -5195,6 +5368,18 @@ int main(void) {
     test_plugin_result_init_free();
     test_plugin_unknown_builtin();
     test_plugin_version_generate();
+
+    printf("\n  Plugin Registry:\n");
+    test_plugin_manifest_parse_string();
+    test_plugin_manifest_parse_minimal();
+    test_plugin_manifest_missing_id();
+    test_plugin_manifest_parse_file_missing();
+    test_plugin_info_free_null_safe();
+    test_plugin_find_binary_missing();
+    test_plugin_list_empty_repo();
+    test_plugin_search_no_match();
+    test_plugin_install_bad_registry();
+    test_plugin_manifest_roundtrip();
 
     printf("\n  Dep confusion protection:\n");
     test_private_group_exact_match();

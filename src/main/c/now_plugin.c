@@ -5,6 +5,8 @@
  * and external plugin invocation via stdin/stdout Pasta IPC.
  */
 #include "now_plugin.h"
+#include "now_plugin_registry.h"
+#include "now_version.h"
 #include "now_fs.h"
 
 #include "pasta.h"
@@ -398,40 +400,248 @@ static int invoke_external(const NowPlugin *plugin,
                            int verbose,
                            NowPluginResult *out,
                            NowResult *result) {
-    /* Build the plugin executable path */
-    const char *home = NULL;
-#ifdef _WIN32
-    home = getenv("USERPROFILE");
-    if (!home) home = getenv("HOME");
-#else
-    home = getenv("HOME");
-#endif
-    if (!home) {
+    if (!plugin || !plugin->id) return -1;
+
+    /* Parse plugin ID: group:artifact:version */
+    NowCoordinate coord;
+    if (now_coord_parse(plugin->id, &coord) != 0) {
         if (result) {
-            result->code = NOW_ERR_NOT_FOUND;
+            result->code = NOW_ERR_SCHEMA;
             snprintf(result->message, sizeof(result->message),
-                     "cannot determine home directory");
+                     "invalid plugin coordinate '%s'", plugin->id);
         }
         return -1;
     }
 
-    /* Parse plugin ID to find executable */
-    /* For now, assume plugin binary is at ~/.now/repo/{group}/{artifact}/{version}/bin/{artifact} */
+    /* Find the plugin binary */
+    char *exe_path = now_plugin_find_binary(NULL, coord.group,
+                                              coord.artifact, coord.version);
+    if (!exe_path) {
+        if (result) {
+            result->code = NOW_ERR_NOT_FOUND;
+            snprintf(result->message, sizeof(result->message),
+                     "plugin binary not found for '%s' — run: now plugin:install %s",
+                     plugin->id, plugin->id);
+        }
+        now_coord_free(&coord);
+        return -1;
+    }
+
+    now_coord_free(&coord);
+
+    /* Build the Pasta input payload */
     char *input = build_plugin_input(plugin, project, basedir, hook);
-    if (!input) return -1;
+    if (!input) { free(exe_path); return -1; }
+    size_t input_len = strlen(input);
 
     if (verbose)
-        fprintf(stderr, "  plugin %s: invoking for hook '%s'\n", plugin->id, hook);
+        fprintf(stderr, "  plugin %s: invoking %s for hook '%s'\n",
+                plugin->id, exe_path, hook);
 
-    /* TODO: full external process invocation with pipes
-     * For now, this is a placeholder that returns an error */
-    free(input);
-    if (result) {
-        result->code = NOW_ERR_NOT_FOUND;
-        snprintf(result->message, sizeof(result->message),
-                 "external plugin '%s' invocation not yet implemented", plugin->id);
+    /* Spawn child process with pipes for stdin/stdout */
+    char *output_buf = NULL;
+    size_t output_len = 0;
+    int exit_code = -1;
+
+#ifdef _WIN32
+    /* Windows: CreateProcess with pipes */
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    HANDLE stdin_rd, stdin_wr, stdout_rd, stdout_wr;
+
+    if (!CreatePipe(&stdin_rd, &stdin_wr, &sa, 0) ||
+        !CreatePipe(&stdout_rd, &stdout_wr, &sa, 0)) {
+        free(input);
+        free(exe_path);
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "failed to create pipes for plugin '%s'", plugin->id);
+        }
+        return -1;
     }
-    return -1;
+
+    /* Don't inherit our side of the pipes */
+    SetHandleInformation(stdin_wr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stdout_rd, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.hStdInput = stdin_rd;
+    si.hStdOutput = stdout_wr;
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    si.dwFlags = STARTF_USESTDHANDLES;
+
+    if (!CreateProcessA(exe_path, NULL, NULL, NULL, TRUE,
+                        0, NULL, NULL, &si, &pi)) {
+        CloseHandle(stdin_rd); CloseHandle(stdin_wr);
+        CloseHandle(stdout_rd); CloseHandle(stdout_wr);
+        free(input);
+        free(exe_path);
+        if (result) {
+            result->code = NOW_ERR_NOT_FOUND;
+            snprintf(result->message, sizeof(result->message),
+                     "failed to launch plugin '%s'", plugin->id);
+        }
+        return -1;
+    }
+
+    /* Close child's ends */
+    CloseHandle(stdin_rd);
+    CloseHandle(stdout_wr);
+
+    /* Write input to plugin stdin */
+    DWORD written;
+    WriteFile(stdin_wr, input, (DWORD)input_len, &written, NULL);
+    CloseHandle(stdin_wr);
+
+    /* Read plugin stdout */
+    size_t out_cap = 4096;
+    output_buf = (char *)malloc(out_cap);
+    output_len = 0;
+    DWORD nread;
+    while (ReadFile(stdout_rd, output_buf + output_len,
+                    (DWORD)(out_cap - output_len - 1), &nread, NULL) && nread > 0) {
+        output_len += nread;
+        if (output_len >= out_cap - 1) {
+            out_cap *= 2;
+            output_buf = (char *)realloc(output_buf, out_cap);
+        }
+    }
+    output_buf[output_len] = '\0';
+    CloseHandle(stdout_rd);
+
+    /* Wait for process to finish */
+    DWORD timeout_ms = 30000;
+    if (plugin->timeout) {
+        int t = atoi(plugin->timeout);
+        if (t > 0) timeout_ms = (DWORD)t * 1000;
+    }
+    DWORD wait = WaitForSingleObject(pi.hProcess, timeout_ms);
+    if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "plugin '%s' timed out after %lus", plugin->id,
+                     (unsigned long)(timeout_ms / 1000));
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        free(output_buf);
+        free(input);
+        free(exe_path);
+        return -1;
+    }
+    DWORD code;
+    GetExitCodeProcess(pi.hProcess, &code);
+    exit_code = (int)code;
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+#else
+    /* POSIX: fork + exec with pipes */
+    int stdin_pipe[2], stdout_pipe[2];
+    if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
+        free(input);
+        free(exe_path);
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "failed to create pipes for plugin '%s'", plugin->id);
+        }
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(stdin_pipe[0]); close(stdin_pipe[1]);
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        free(input);
+        free(exe_path);
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "fork failed for plugin '%s'", plugin->id);
+        }
+        return -1;
+    }
+
+    if (pid == 0) {
+        /* Child */
+        close(stdin_pipe[1]);   /* close write end of stdin */
+        close(stdout_pipe[0]);  /* close read end of stdout */
+        dup2(stdin_pipe[0], STDIN_FILENO);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+        execl(exe_path, exe_path, (char *)NULL);
+        _exit(127);
+    }
+
+    /* Parent */
+    close(stdin_pipe[0]);
+    close(stdout_pipe[1]);
+
+    /* Write input */
+    write(stdin_pipe[1], input, input_len);
+    close(stdin_pipe[1]);
+
+    /* Read output */
+    size_t out_cap = 4096;
+    output_buf = (char *)malloc(out_cap);
+    output_len = 0;
+    ssize_t nread;
+    while ((nread = read(stdout_pipe[0], output_buf + output_len,
+                         out_cap - output_len - 1)) > 0) {
+        output_len += (size_t)nread;
+        if (output_len >= out_cap - 1) {
+            out_cap *= 2;
+            output_buf = (char *)realloc(output_buf, out_cap);
+        }
+    }
+    output_buf[output_len] = '\0';
+    close(stdout_pipe[0]);
+
+    /* Wait for child */
+    int status;
+    waitpid(pid, &status, 0);
+    exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+
+    free(input);
+    free(exe_path);
+
+    /* Non-zero exit = error regardless of output */
+    if (exit_code != 0) {
+        if (result) {
+            result->code = NOW_ERR_IO;
+            snprintf(result->message, sizeof(result->message),
+                     "plugin '%s' exited with code %d", plugin->id, exit_code);
+        }
+        free(output_buf);
+        return -1;
+    }
+
+    /* Parse plugin output */
+    if (output_len == 0) {
+        if (result) {
+            result->code = NOW_ERR_SCHEMA;
+            snprintf(result->message, sizeof(result->message),
+                     "plugin '%s' produced no output", plugin->id);
+        }
+        free(output_buf);
+        return -1;
+    }
+
+    int rc = parse_plugin_response(output_buf, output_len, out, result);
+    free(output_buf);
+
+    if (verbose && rc == 0)
+        fprintf(stderr, "  plugin %s: completed successfully\n", plugin->id);
+
+    return rc;
 }
 
 /* ---- Single plugin invocation ---- */
