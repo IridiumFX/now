@@ -56,6 +56,7 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_advisory.c` | `now_advisory.h` | Advisory guards: advisory DB loading, severity checking, override mechanism, dep checking |
 | `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external IPC protocol |
 | `now_workspace.c` | `now_workspace.h` | Workspace/module system: DAG construction, Kahn's topo sort, wave build |
+| `now_cache.c` | `now_cache.h` | Content-addressable build cache: SHA-256 key, two-level sharding, header-aware (depfile parsing, ccache-style two-level key) |
 | `main.c` | — | CLI entry point: phase dispatch, option parsing |
 
 ---
@@ -133,10 +134,28 @@ SHA-256 based rebuild detection stored at `target/.now-manifest` in Pasta format
 - **Fast path**: mtime comparison first; only hashes on mtime change
 - **Flags change detection**: recompiles if any compiler flag changes
 - **Object existence check**: rebuilds if the `.o` file is missing
+- **Header dependency tracking**: compiler depfiles (`-MD -MF` for GCC/Clang, `/showIncludes` for MSVC) parsed after compilation; dep paths and hashes stored per manifest entry; `needs_rebuild` checks all header hashes
 - **Embedded SHA-256**: public-domain implementation (Brad Conte), no external dependency
 - **Deterministic output**: uses `PASTA_SORTED` for canonical key ordering
 
 On subsequent builds, unchanged sources are skipped entirely.
+
+### 5b. Content-Addressable Build Cache
+
+Compiled objects are cached at `~/.now/cache/objects/` and survive `now clean`.
+Uses a ccache-style two-level key for header awareness:
+
+- **source_key**: `SHA-256(source_hash + flags_hash + compiler_path)` — identifies source+flags combo
+- **result_key**: `SHA-256(source_key + sorted_dep_hashes)` — includes all header content
+- **Storage**: two-level sharding `{root}/ab/cd/{key}{ext}` (65536 buckets)
+- **`.deps` sidecar**: `{source_key}.deps` maps to dep list + hashes + result_key
+- **Depfile parsing**: GCC/Clang `.d` format (Makefile-style, backslash continuations) and MSVC `/showIncludes` output
+- **Lookup**: compute source_key → read .deps → verify dep hashes → restore result object
+- **Store**: parse compiler depfile → hash deps → compute result_key → store object + .deps sidecar
+- **Backward compatible**: old cache entries without `.deps` miss gracefully and recompile with deps
+- **CLI**: `now cache:clean` (purge), `now cache:stats` (object count + total size)
+
+Build summary reports: `compiled N, cached N, skipped N (up to date)`.
 
 ### 6. Link Phase — Guide Step 7
 
@@ -278,6 +297,10 @@ Standalone MIT-licensable HTTP/1.1 client:
 - **Response parsing**: status line, headers, `Content-Length` and chunked transfer encoding
 - **Redirects**: 301/302/303/307/308 with cross-scheme (http↔https) tracking
 - **TLS**: optional HTTPS via mbedTLS (`PICO_HTTP_TLS` compile flag)
+  - CA verification: `MBEDTLS_SSL_VERIFY_REQUIRED` by default (was VERIFY_NONE)
+  - System CA loading: `CertOpenSystemStore` on Windows, well-known PEM paths on POSIX
+  - Options: `tls_noverify` (disable), `ca_file` (custom PEM), `ca_data` (in-memory PEM)
+  - SNI hostname set for virtual hosting
 - **URL parser**: `pico_http_parse_url_ex` with scheme/host/port/path/tls extraction
 - **Connect timeout**: non-blocking connect with `select` (Windows) or `poll` (POSIX)
 
@@ -522,9 +545,12 @@ Trust store management and signature verification for package integrity:
   - `require_signatures: true` — reject unsigned packages (level: SIGNED)
   - `require_known_keys: true` — reject packages signed by unknown keys (level: TRUSTED)
 - **Trust levels**: NONE (SHA-256 only), SIGNED (any valid signature), TRUSTED (known key required)
-- **Signature verification**: delegates to `minisign` binary for Ed25519 detached signatures
-  - `now_verify_file()` — verifies archive against `.sig` file and public key
-  - `now_ed25519_verify()` — reserved for future embedded Ed25519 (currently returns -1)
+- **Signature verification**: native Ed25519 (RFC 8032) — no external dependencies
+  - `now_ed25519_keypair()` — derive Ed25519 keypair from 32-byte seed
+  - `now_ed25519_sign()` — sign a message with Ed25519
+  - `now_ed25519_verify()` — verify an Ed25519 signature
+  - `now_verify_file()` — verify archive against `.sig` file and base64 public key
+  - Self-contained SHA-512, GF(2^255-19) field arithmetic (ref10-style 10-limb)
 - **CLI commands**:
   - `now trust:list` — display all keys in the trust store
   - `now trust:add <scope> <key> [comment]` — add a key to the trust store
@@ -571,7 +597,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-170 tests across all modules:
+238 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -584,7 +610,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | SemVer | 5 | Parse basic, prerelease, build; compare ordering; to_string roundtrip |
 | Ranges | 8 | Exact, caret, caret pre-1.0, tilde, >=, compound, wildcard, intersection |
 | Coordinates | 1 | Parse group:artifact:version |
-| Manifest | 3 | Set/find, update, SHA-256 known-answer test |
+| Manifest | 3 | Set/find, update, SHA-256 known-answer test (dep tracking tested separately) |
 | Resolver | 5 | Single dep, convergence, conflict, multiple deps, override |
 | Lock file | 1 | Save and reload round-trip |
 | HTTP | 11 | Version, URL parsing (http/https/ftp reject), error strings, invalid args, DNS fail, connect fail, header lookup, response free, stream invalid args, stream connect fail, stream callback type |
@@ -604,10 +630,14 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Trust | 12 | Init/free, add, scope wildcard/prefix/exact, find/no-match, policy none/signed/trusted, project parse, null safety |
 | Advisory | 17 | DB init/free, severity parse/name/blocks, load string, blacklisted, override parse/no-expires/expiry, find override, check dep match/no-match/overridden, blacklisted-no-override, medium warning, report format, null safety |
 | Package | 3 | Host triple detection, package phase, install phase |
+| Build cache | 8 | Key determinism, key variation (source/flags/compiler), sharding, store/restore, miss, clean |
+| Depfile parsing | 4 | Simple .d, multiline continuations, missing file, MSVC /showIncludes |
+| Dep-aware cache | 3 | No .deps miss, store/restore with deps, dep deleted |
+| Manifest deps | 3 | set_deps, save/load roundtrip, needs_rebuild on dep change |
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 170 tests pass (169 in CI — build integration test requires gcc in PATH at runtime).
+All 238 tests pass (228 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -627,7 +657,9 @@ Apache-2.0 licensed TLS library (v3.6.5). Used for:
 - HTTPS support in pico_http (`PICO_HTTP_TLS` compile flag)
 - WSS support in pico_ws
 - BIO callbacks wrapping platform sockets (no `mbedtls_net` dependency)
-- Currently `MBEDTLS_SSL_VERIFY_NONE` — CA cert loading planned
+- CA certificate verification: `MBEDTLS_SSL_VERIFY_REQUIRED` by default
+- System CA loading: Windows `CertOpenSystemStore` + well-known POSIX paths
+- `PicoHttpOptions.tls_noverify` / `ca_file` / `ca_data` for caller control
 
 ### Cookbook (git submodule at `lib/cookbook`)
 
@@ -694,7 +726,7 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | 27 | IDE integration | Compile database, `now stay` daemon, LSP bridge |
 | 28 | Embedded platforms | Freestanding output, custom linker scripts, platform registry |
 | 29 | Additional languages | Ada, Fortran, Modula-2, Pascal, and others |
-| E3 | Embedded Ed25519 | Verify-only Ed25519 + SHA-512 — removes minisign runtime dependency |
+| E3 | ~~Embedded Ed25519~~ | **DONE** | Native SHA-512 + Ed25519 keypair/sign/verify/file-verify (ref10-style field arithmetic, 7 tests) |
 | E4 | `now export:meson` | Generate meson.build from now.pasta |
 
 **Completed: 27 of 27 v1 steps** (steps 1–12, 14–21, 22–26, E1, E2, CLI, pico networking). All v1 steps done.

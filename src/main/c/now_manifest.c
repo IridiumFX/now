@@ -167,6 +167,12 @@ NOW_API void now_manifest_free(NowManifest *m) {
         free(m->entries[i].object);
         free(m->entries[i].source_hash);
         free(m->entries[i].flags_hash);
+        for (size_t d = 0; d < m->entries[i].dep_count; d++) {
+            free(m->entries[i].deps[d]);
+            free(m->entries[i].dep_hashes[d]);
+        }
+        free(m->entries[i].deps);
+        free(m->entries[i].dep_hashes);
     }
     free(m->entries);
     free(m->link_flags_hash);
@@ -211,12 +217,59 @@ NOW_API int now_manifest_set(NowManifest *m, const char *source,
     }
 
     NowManifestEntry *e = &m->entries[m->count];
+    memset(e, 0, sizeof(*e));
     e->source      = strdup(source);
     e->object      = object ? strdup(object) : NULL;
     e->source_hash = source_hash ? strdup(source_hash) : NULL;
     e->flags_hash  = flags_hash ? strdup(flags_hash) : NULL;
     e->mtime       = mtime;
     m->count++;
+    return 0;
+}
+
+NOW_API int now_manifest_set_deps(NowManifest *m, const char *source,
+                                   const char **deps, const char **dep_hashes,
+                                   size_t dep_count) {
+    if (!m || !source) return -1;
+
+    /* Find existing entry */
+    NowManifestEntry *e = NULL;
+    for (size_t i = 0; i < m->count; i++) {
+        if (strcmp(m->entries[i].source, source) == 0) {
+            e = &m->entries[i];
+            break;
+        }
+    }
+    if (!e) return -1;
+
+    /* Free old deps */
+    for (size_t i = 0; i < e->dep_count; i++) {
+        free(e->deps[i]);
+        free(e->dep_hashes[i]);
+    }
+    free(e->deps);
+    free(e->dep_hashes);
+    e->deps = NULL;
+    e->dep_hashes = NULL;
+    e->dep_count = 0;
+
+    if (dep_count == 0 || !deps || !dep_hashes) return 0;
+
+    e->deps = (char **)malloc(dep_count * sizeof(char *));
+    e->dep_hashes = (char **)malloc(dep_count * sizeof(char *));
+    if (!e->deps || !e->dep_hashes) {
+        free(e->deps);
+        free(e->dep_hashes);
+        e->deps = NULL;
+        e->dep_hashes = NULL;
+        return -1;
+    }
+
+    for (size_t i = 0; i < dep_count; i++) {
+        e->deps[i] = strdup(deps[i]);
+        e->dep_hashes[i] = strdup(dep_hashes[i]);
+    }
+    e->dep_count = dep_count;
     return 0;
 }
 
@@ -256,6 +309,17 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
     /* Check object file exists */
     if (entry->object && !now_path_exists(entry->object))
         return 1;
+
+    /* Check header dependencies */
+    for (size_t d = 0; d < entry->dep_count; d++) {
+        if (!entry->deps[d] || !entry->dep_hashes[d])
+            return 1;
+        char *dh = now_sha256_file(entry->deps[d]);
+        if (!dh) return 1;  /* dep deleted or unreadable */
+        int changed = strcmp(dh, entry->dep_hashes[d]) != 0;
+        free(dh);
+        if (changed) return 1;
+    }
 
     return 0;  /* up to date */
 }
@@ -314,8 +378,45 @@ NOW_API int now_manifest_load(NowManifest *m, const char *path) {
             v = pasta_map_get(e, "mtime");
             if (v && pasta_type(v) == PASTA_NUMBER) mt = (long long)pasta_get_number(v);
 
-            if (src)
+            if (src) {
                 now_manifest_set(m, src, obj, sh, fh, mt);
+
+                /* Load deps if present */
+                const PastaValue *darr = pasta_map_get(e, "deps");
+                if (darr && pasta_type(darr) == PASTA_ARRAY) {
+                    size_t dc = pasta_count(darr);
+                    if (dc > 0) {
+                        char **dpaths = (char **)malloc(dc * sizeof(char *));
+                        char **dhashes = (char **)malloc(dc * sizeof(char *));
+                        size_t actual = 0;
+                        if (dpaths && dhashes) {
+                            for (size_t d = 0; d < dc; d++) {
+                                const PastaValue *de = pasta_array_get(darr, d);
+                                if (!de || pasta_type(de) != PASTA_MAP) continue;
+                                const PastaValue *dp = pasta_map_get(de, "path");
+                                const PastaValue *dh = pasta_map_get(de, "hash");
+                                if (dp && dh &&
+                                    pasta_type(dp) == PASTA_STRING &&
+                                    pasta_type(dh) == PASTA_STRING) {
+                                    dpaths[actual] = strdup(pasta_get_string(dp));
+                                    dhashes[actual] = strdup(pasta_get_string(dh));
+                                    actual++;
+                                }
+                            }
+                            if (actual > 0)
+                                now_manifest_set_deps(m, src,
+                                    (const char **)dpaths,
+                                    (const char **)dhashes, actual);
+                            for (size_t d = 0; d < actual; d++) {
+                                free(dpaths[d]);
+                                free(dhashes[d]);
+                            }
+                        }
+                        free(dpaths);
+                        free(dhashes);
+                    }
+                }
+            }
         }
     }
 
@@ -341,6 +442,17 @@ NOW_API int now_manifest_save(const NowManifest *m, const char *path) {
         if (e->source_hash) pasta_set(entry, "source_hash", pasta_new_string(e->source_hash));
         if (e->flags_hash)  pasta_set(entry, "flags_hash", pasta_new_string(e->flags_hash));
         pasta_set(entry, "mtime", pasta_new_number((double)e->mtime));
+
+        if (e->dep_count > 0 && e->deps && e->dep_hashes) {
+            PastaValue *dep_arr = pasta_new_array();
+            for (size_t d = 0; d < e->dep_count; d++) {
+                PastaValue *dep = pasta_new_map();
+                pasta_set(dep, "path", pasta_new_string(e->deps[d]));
+                pasta_set(dep, "hash", pasta_new_string(e->dep_hashes[d]));
+                pasta_push(dep_arr, dep);
+            }
+            pasta_set(entry, "deps", dep_arr);
+        }
 
         pasta_push(entries, entry);
     }

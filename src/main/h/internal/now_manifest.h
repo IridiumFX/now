@@ -17,6 +17,9 @@ typedef struct {
     char  *source_hash;   /* hex SHA-256 of source file */
     char  *flags_hash;    /* hex SHA-256 of compiler flag string */
     long long mtime;      /* source file modification time (seconds since epoch) */
+    char **deps;          /* header dependency paths (from compiler depfile) */
+    char **dep_hashes;    /* SHA-256 of each dep */
+    size_t dep_count;
 } NowManifestEntry;
 
 /* The full manifest */
@@ -58,5 +61,11 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
                                         const char *basedir,
                                         const char *source,
                                         const char *flags_hash);
+
+/* Set header dependencies on an existing manifest entry.
+ * The deps and hashes arrays are copied. Returns 0 on success. */
+NOW_API int now_manifest_set_deps(NowManifest *m, const char *source,
+                                   const char **deps, const char **dep_hashes,
+                                   size_t dep_count);
 
 #endif /* NOW_MANIFEST_H */

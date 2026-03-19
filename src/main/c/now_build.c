@@ -7,6 +7,7 @@
 #include "now_manifest.h"
 #include "now_repro.h"
 #include "now_module.h"
+#include "now_cache.h"
 #include "now.h"
 
 #include <stdlib.h>
@@ -572,12 +573,40 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
 
 /* ---- Compile phase (§2.3) ---- */
 
+/* Filter out MSVC /showIncludes lines from captured output.
+ * Prints remaining lines to stderr. */
+static void print_filtered_output(const char *data, size_t len, int is_msvc) {
+    if (!data || len == 0) return;
+    if (!is_msvc) {
+        fprintf(stderr, "%s", data);
+        return;
+    }
+    const char *pos = data;
+    const char *end = data + len;
+    while (pos < end) {
+        const char *eol = pos;
+        while (eol < end && *eol != '\n') eol++;
+        size_t line_len = (size_t)(eol - pos);
+        /* Skip "Note: including file:" lines */
+        if (line_len < 21 ||
+            memcmp(pos, "Note: including file:", 21) != 0) {
+            if (line_len > 0)
+                fwrite(pos, 1, line_len, stderr);
+            if (eol < end) fputc('\n', stderr);
+        }
+        pos = eol < end ? eol + 1 : end;
+    }
+}
+
 /* A compile job — everything needed to compile one source file */
 typedef struct {
     char  *src_rel;     /* source path (relative) */
     char  *obj_path;    /* output object path */
     char **argv;        /* NULL-terminated argument list (all strings owned) */
     int    argc;
+    char  *source_hash; /* SHA-256 of source file (for cache/manifest reuse) */
+    char  *cache_key;   /* content-addressable cache key */
+    char  *dep_path;    /* path to .d depfile (GCC/Clang) or NULL (MSVC) */
 } NowCompileJob;
 
 static void compile_job_free(NowCompileJob *job) {
@@ -588,6 +617,9 @@ static void compile_job_free(NowCompileJob *job) {
             free(job->argv[i]);
         free(job->argv);
     }
+    free(job->source_hash);
+    free(job->cache_key);
+    free(job->dep_path);
     memset(job, 0, sizeof(*job));
 }
 
@@ -736,6 +768,9 @@ static int build_compile_job_msvc(NowBuildCtx *ctx, const char *src_rel,
             tmp_argv[tmp_argc++] = "/GL";
         }
     }
+
+    /* Header dependency tracking */
+    tmp_argv[tmp_argc++] = "/showIncludes";
 
     /* Compile only */
     tmp_argv[tmp_argc++] = "/c";
@@ -909,6 +944,17 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
             tmp_argv[tmp_argc++] = "-flto";
     }
 
+    /* Dependency file for header tracking */
+    size_t obj_len = strlen(obj);
+    char *dep_file = (char *)malloc(obj_len + 3);
+    if (dep_file) {
+        memcpy(dep_file, obj, obj_len);
+        memcpy(dep_file + obj_len, ".d", 3);
+        tmp_argv[tmp_argc++] = "-MD";
+        tmp_argv[tmp_argc++] = "-MF";
+        tmp_argv[tmp_argc++] = dep_file;
+    }
+
     tmp_argv[tmp_argc++] = "-c";
 
     char *src_full = now_path_join(basedir, src_rel);
@@ -920,6 +966,7 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
     /* Now copy everything into owned strings */
     job->argv = (char **)malloc((tmp_argc + 1) * sizeof(char *));
     if (!job->argv) {
+        free(dep_file);
         free(src_full);
         free(obj);
         for (size_t i = 0; i < nwarn; i++) free(warn_bufs[i]);
@@ -934,8 +981,10 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
 
     job->src_rel  = strdup(src_rel);
     job->obj_path = strdup(obj);
+    job->dep_path = dep_file ? strdup(dep_file) : NULL;
 
     /* Free temporaries (the copies are in job->argv now) */
+    free(dep_file);
     free(src_full);
     free(obj);
     for (size_t i = 0; i < nwarn; i++) free(warn_bufs[i]);
@@ -1534,6 +1583,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     }
 
     int skipped = 0;
+    int cache_hits = 0;
 
     for (size_t i = 0; i < ctx->sources.count; i++) {
         const char *src = ctx->sources.paths[i];
@@ -1551,6 +1601,49 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                 now_filelist_push(&ctx->objects, entry->object);
             skipped++;
             continue;
+        }
+
+        /* Check content-addressable cache */
+        {
+            char *src_full = now_path_join(ctx->basedir, src);
+            char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
+            if (src_hash) {
+                /* Pick compiler based on language */
+                const char *compiler = ctx->toolchain.cc;
+                if (type->tool_var && strcmp(type->tool_var, "${cxx}") == 0)
+                    compiler = ctx->toolchain.cxx;
+                if (!compiler) compiler = "";
+
+                char *ckey = now_cache_key(src_hash, fhash, compiler);
+                if (ckey) {
+                    const char *obj_ext = ctx->toolchain.is_msvc ? ".obj" : ".o";
+                    char *obj = ctx->toolchain.is_msvc
+                        ? now_obj_path_ex(ctx->basedir, src, p->sources.dir,
+                                          ctx->target_dir, ".obj")
+                        : now_obj_path(ctx->basedir, src, p->sources.dir,
+                                       ctx->target_dir);
+                    if (obj && now_cache_restore_ex(ckey, obj, obj_ext) == 0) {
+                        /* Cache hit — update manifest and skip */
+                        struct stat cst;
+                        long long mtime = 0;
+                        if (src_full && stat(src_full, &cst) == 0)
+                            mtime = (long long)cst.st_mtime;
+                        now_manifest_set(&manifest, src, obj,
+                                         src_hash, fhash, mtime);
+                        now_filelist_push(&ctx->objects, obj);
+                        cache_hits++;
+                        free(obj);
+                        free(ckey);
+                        free(src_hash);
+                        free(src_full);
+                        continue;
+                    }
+                    free(obj);
+                    free(ckey);
+                }
+            }
+            free(src_hash);
+            free(src_full);
         }
 
         int jrc;
@@ -1691,8 +1784,13 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     continue;
                 }
 
-                /* Update manifest */
+                /* Parse deps from compiler depfile */
                 char *src_full = now_path_join(ctx->basedir, job->src_rel);
+                NowDepList deps = {0};
+                if (job->dep_path)
+                    now_depfile_parse(job->dep_path, src_full, &deps);
+
+                /* Update manifest */
                 char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
                 struct stat st;
                 long long mtime = 0;
@@ -1700,6 +1798,40 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     mtime = (long long)st.st_mtime;
                 now_manifest_set(&manifest, job->src_rel, job->obj_path,
                                  src_hash, fhash, mtime);
+
+                /* Store dep info in manifest */
+                if (deps.count > 0) {
+                    char **dhashes = (char **)calloc(deps.count, sizeof(char *));
+                    if (dhashes) {
+                        for (size_t d = 0; d < deps.count; d++)
+                            dhashes[d] = now_sha256_file(deps.paths[d]);
+                        now_manifest_set_deps(&manifest, job->src_rel,
+                            (const char **)deps.paths,
+                            (const char **)dhashes, deps.count);
+                        for (size_t d = 0; d < deps.count; d++)
+                            free(dhashes[d]);
+                        free(dhashes);
+                    }
+                }
+
+                /* Store in content-addressable cache (with deps) */
+                if (src_hash) {
+                    const char *compiler = job->argv ? job->argv[0] : "";
+                    char *ckey = now_cache_key(src_hash, fhash, compiler);
+                    if (ckey) {
+                        const char *ext = ctx->toolchain.is_msvc ? ".obj" : ".o";
+                        now_cache_store_ex(ckey, job->obj_path, ext,
+                                           deps.count > 0 ? &deps : NULL);
+                        free(ckey);
+                    }
+                }
+
+                now_deplist_free(&deps);
+
+                /* Clean up depfile */
+                if (job->dep_path)
+                    remove(job->dep_path);
+
                 free(src_full);
                 free(src_hash);
 
@@ -1776,7 +1908,8 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     if (exit_code != 0) {
                         /* Print captured output (compiler errors) */
                         if (captured.data && captured.len > 0)
-                            fprintf(stderr, "%s", captured.data);
+                            print_filtered_output(captured.data, captured.len,
+                                                  ctx->toolchain.is_msvc);
                         if (result) {
                             result->code = NOW_ERR_TOOL;
                             snprintf(result->message, sizeof(result->message),
@@ -1787,10 +1920,19 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     } else {
                         /* Print captured output only if verbose */
                         if (ctx->verbose && captured.data && captured.len > 0)
-                            fprintf(stderr, "%s", captured.data);
+                            print_filtered_output(captured.data, captured.len,
+                                                  ctx->toolchain.is_msvc);
+
+                        /* Parse deps from compiler output */
+                        char *src_full = now_path_join(ctx->basedir, job->src_rel);
+                        NowDepList deps = {0};
+                        if (ctx->toolchain.is_msvc && captured.data)
+                            now_depfile_parse_msvc(captured.data,
+                                                   captured.len, &deps);
+                        else if (job->dep_path)
+                            now_depfile_parse(job->dep_path, src_full, &deps);
 
                         /* Update manifest */
-                        char *src_full = now_path_join(ctx->basedir, job->src_rel);
                         char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
                         struct stat st;
                         long long mtime = 0;
@@ -1798,6 +1940,40 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                             mtime = (long long)st.st_mtime;
                         now_manifest_set(&manifest, job->src_rel, job->obj_path,
                                          src_hash, fhash, mtime);
+
+                        /* Store dep info in manifest */
+                        if (deps.count > 0) {
+                            char **dhashes = (char **)calloc(deps.count, sizeof(char *));
+                            if (dhashes) {
+                                for (size_t d = 0; d < deps.count; d++)
+                                    dhashes[d] = now_sha256_file(deps.paths[d]);
+                                now_manifest_set_deps(&manifest, job->src_rel,
+                                    (const char **)deps.paths,
+                                    (const char **)dhashes, deps.count);
+                                for (size_t d = 0; d < deps.count; d++)
+                                    free(dhashes[d]);
+                                free(dhashes);
+                            }
+                        }
+
+                        /* Store in content-addressable cache (with deps) */
+                        if (src_hash) {
+                            const char *compiler = job->argv ? job->argv[0] : "";
+                            char *ckey = now_cache_key(src_hash, fhash, compiler);
+                            if (ckey) {
+                                const char *ext = ctx->toolchain.is_msvc ? ".obj" : ".o";
+                                now_cache_store_ex(ckey, job->obj_path, ext,
+                                                   deps.count > 0 ? &deps : NULL);
+                                free(ckey);
+                            }
+                        }
+
+                        now_deplist_free(&deps);
+
+                        /* Clean up depfile */
+                        if (job->dep_path)
+                            remove(job->dep_path);
+
                         free(src_full);
                         free(src_hash);
 
@@ -1830,8 +2006,14 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     now_repro_free(&repro);
     now_module_scan_free(&modscan);
 
-    if (ctx->verbose && (compiled > 0 || skipped > 0)) {
-        if (max_jobs > 1 && compiled > 1)
+    if (ctx->verbose && (compiled > 0 || skipped > 0 || cache_hits > 0)) {
+        if (cache_hits > 0 && compiled > 0 && max_jobs > 1)
+            fprintf(stderr, "  compiled %d (%d-way parallel), cached %d, skipped %d (up to date)\n",
+                    compiled, max_jobs, cache_hits, skipped);
+        else if (cache_hits > 0)
+            fprintf(stderr, "  compiled %d, cached %d, skipped %d (up to date)\n",
+                    compiled, cache_hits, skipped);
+        else if (max_jobs > 1 && compiled > 1)
             fprintf(stderr, "  compiled %d (%d-way parallel), skipped %d (up to date)\n",
                     compiled, max_jobs, skipped);
         else

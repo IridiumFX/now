@@ -18,6 +18,7 @@
   #include <mbedtls/ssl.h>
   #include <mbedtls/entropy.h>
   #include <mbedtls/ctr_drbg.h>
+  #include <mbedtls/x509_crt.h>
 #endif
 
 /* ---- Platform sockets ---- */
@@ -58,7 +59,10 @@ typedef struct {
     mbedtls_ssl_config       conf;
     mbedtls_ctr_drbg_context drbg;
     mbedtls_entropy_context  entropy;
+    mbedtls_x509_crt         cacert;
     int                      tls_init;
+    int                      tls_verify;   /* 1=REQUIRED (default), 0=NONE */
+    int                      cacert_init;  /* 1 if cacert has been initialized */
 #endif
 } PicoConn;
 
@@ -73,6 +77,10 @@ pico_socket_t pico_connect(const char *host, int port,
                             int connect_timeout_ms, int *err_out);
 #ifdef PICO_HTTP_TLS
 int  pico_tls_handshake(PicoConn *c, const char *hostname);
+int  pico_load_system_ca(PicoConn *c);
+int  pico_load_ca_file(PicoConn *c, const char *path);
+int  pico_load_ca_data(PicoConn *c, const unsigned char *pem,
+                       size_t pem_len);
 #endif
 
 #endif /* PICO_INTERNAL_H */

@@ -86,6 +86,13 @@ typedef struct {
     int                   connect_timeout_ms; /* Connect timeout (0 = 5000) */
     int                   timeout_ms;        /* Read/write timeout (0 = 30000) */
     int                   max_redirects;     /* Max redirects to follow (0 = 10, -1 = disable) */
+    /* TLS certificate verification (HTTPS only).
+     * Default (0): verify server certificate against system CA store.
+     * Set tls_noverify=1 to skip verification (development/localhost only). */
+    int                   tls_noverify;
+    const char           *ca_file;      /* Path to PEM CA bundle (NULL = system store) */
+    const unsigned char  *ca_data;      /* PEM CA certificate data (NULL = use file or system) */
+    size_t                ca_data_len;  /* Length of ca_data in bytes */
 } PicoHttpOptions;
 
 /* ---- Core API ---- */

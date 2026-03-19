@@ -248,6 +248,16 @@ PICO_WS_API PicoWs *pico_ws_connect(const char *url,
     /* TLS handshake if wss:// */
 #ifdef PICO_HTTP_TLS
     if (use_tls) {
+        int noverify = (opts && opts->tls_noverify);
+        ws->conn.tls_verify = !noverify;
+        if (ws->conn.tls_verify) {
+            if (opts && opts->ca_data && opts->ca_data_len > 0)
+                pico_load_ca_data(&ws->conn, opts->ca_data, opts->ca_data_len);
+            else if (opts && opts->ca_file)
+                pico_load_ca_file(&ws->conn, opts->ca_file);
+            else
+                pico_load_system_ca(&ws->conn);
+        }
         int tls_rc = pico_tls_handshake(&ws->conn, host);
         if (tls_rc != 0) {
             pico_conn_close(&ws->conn);

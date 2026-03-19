@@ -72,6 +72,13 @@ typedef struct {
     int   recv_timeout_ms;      /* Default recv timeout; 0 = 30000 */
     const char *protocol;       /* Sub-protocol to request (NULL = none) */
     const char *const *extra_headers;  /* NULL-terminated array of "Name: Value" strings */
+    /* TLS certificate verification (wss:// only).
+     * Default (0): verify server certificate against system CA store.
+     * Set tls_noverify=1 to skip verification (development/localhost only). */
+    int                   tls_noverify;
+    const char           *ca_file;      /* Path to PEM CA bundle (NULL = system store) */
+    const unsigned char  *ca_data;      /* PEM CA certificate data */
+    size_t                ca_data_len;
 } PicoWsOptions;
 
 /* ---- Core API ---- */

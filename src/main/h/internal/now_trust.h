@@ -77,15 +77,30 @@ NOW_API NowTrustPolicy now_trust_policy_from_project(const void *project);
 /* Get the effective trust level from a policy. */
 NOW_API NowTrustLevel now_trust_level(const NowTrustPolicy *policy);
 
-/* ---- Signature verification ---- */
+/* ---- Ed25519 digital signatures (native, no external deps) ---- */
+
+/* Generate an Ed25519 keypair from a 32-byte seed.
+ * pub receives the 32-byte public key.
+ * priv receives the 64-byte private key (seed || public key).
+ * Returns 0 on success. */
+NOW_API int now_ed25519_keypair(unsigned char pub[32],
+                                 unsigned char priv[64],
+                                 const unsigned char seed[32]);
+
+/* Sign a message with an Ed25519 private key.
+ * sig receives the 64-byte signature.
+ * Returns 0 on success. */
+NOW_API int now_ed25519_sign(unsigned char sig[64],
+                               const unsigned char *msg, size_t msg_len,
+                               const unsigned char priv[64]);
 
 /* Verify an Ed25519 signature (64 bytes) over a message against a public key (32 bytes).
- * Returns 0 if valid, non-zero if invalid. */
+ * Returns 0 if valid, -1 if invalid. */
 NOW_API int now_ed25519_verify(const unsigned char *sig,
                                 const unsigned char *msg, size_t msg_len,
                                 const unsigned char *pub_key);
 
-/* Verify a .sig file (minisign detached signature) against a .tar.gz file
+/* Verify a .sig file (Ed25519 detached signature) against a file
  * using a base64-encoded public key string.
  * Returns 0 if valid, non-zero on error or invalid signature. */
 NOW_API int now_verify_file(const char *archive_path, const char *sig_path,

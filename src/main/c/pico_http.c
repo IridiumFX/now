@@ -22,6 +22,10 @@
 
 #ifdef PICO_HTTP_TLS
   #include <mbedtls/error.h>
+  #ifdef _WIN32
+    #include <wincrypt.h>
+    #pragma comment(lib, "crypt32.lib")
+  #endif
 #endif
 
 /* ---- Platform init ---- */
@@ -99,6 +103,10 @@ void pico_conn_close(PicoConn *c) {
         mbedtls_entropy_free(&c->entropy);
         c->tls_init = 0;
     }
+    if (c->cacert_init) {
+        mbedtls_x509_crt_free(&c->cacert);
+        c->cacert_init = 0;
+    }
 #endif
     if (c->sock != PICO_INVALID_SOCKET) {
         pico_closesocket(c->sock);
@@ -123,7 +131,80 @@ int pico_tls_recv(void *ctx, unsigned char *buf, size_t len) {
     return n;
 }
 
+/* ---- System CA certificate loading ---- */
+
+#ifdef _WIN32
+/* Load CA certificates from the Windows certificate store. */
+int pico_load_system_ca(PicoConn *c) {
+    if (!c->cacert_init) {
+        mbedtls_x509_crt_init(&c->cacert);
+        c->cacert_init = 1;
+    }
+
+    HCERTSTORE store = CertOpenSystemStoreA(0, "ROOT");
+    if (!store) return -1;
+
+    int loaded = 0;
+    PCCERT_CONTEXT ctx = NULL;
+    while ((ctx = CertEnumCertificatesInStore(store, ctx)) != NULL) {
+        if (mbedtls_x509_crt_parse_der(&c->cacert,
+                                         ctx->pbCertEncoded,
+                                         ctx->cbCertEncoded) == 0)
+            loaded++;
+    }
+
+    CertCloseStore(store, 0);
+    return loaded > 0 ? 0 : -1;
+}
+#else
+/* Well-known system CA bundle paths (Linux, macOS, FreeBSD, etc.) */
+static const char *const pico_ca_paths[] = {
+    "/etc/ssl/certs/ca-certificates.crt",   /* Debian/Ubuntu */
+    "/etc/pki/tls/certs/ca-bundle.crt",     /* RHEL/CentOS/Fedora */
+    "/etc/ssl/cert.pem",                    /* macOS, Alpine, FreeBSD */
+    "/etc/ssl/ca-bundle.pem",               /* openSUSE */
+    "/usr/local/share/certs/ca-root-nss.crt", /* FreeBSD ports */
+    NULL
+};
+
+int pico_load_system_ca(PicoConn *c) {
+    if (!c->cacert_init) {
+        mbedtls_x509_crt_init(&c->cacert);
+        c->cacert_init = 1;
+    }
+
+    for (int i = 0; pico_ca_paths[i]; i++) {
+        if (mbedtls_x509_crt_parse_file(&c->cacert, pico_ca_paths[i]) == 0)
+            return 0;
+    }
+    return -1;  /* no system CA bundle found */
+}
+#endif /* _WIN32 */
+
+/* Load CA certificates from a PEM file. */
+int pico_load_ca_file(PicoConn *c, const char *path) {
+    if (!path) return -1;
+    if (!c->cacert_init) {
+        mbedtls_x509_crt_init(&c->cacert);
+        c->cacert_init = 1;
+    }
+    return mbedtls_x509_crt_parse_file(&c->cacert, path) == 0 ? 0 : -1;
+}
+
+/* Load CA certificates from PEM data in memory. */
+int pico_load_ca_data(PicoConn *c, const unsigned char *pem, size_t pem_len) {
+    if (!pem || pem_len == 0) return -1;
+    if (!c->cacert_init) {
+        mbedtls_x509_crt_init(&c->cacert);
+        c->cacert_init = 1;
+    }
+    return mbedtls_x509_crt_parse(&c->cacert, pem, pem_len) == 0 ? 0 : -1;
+}
+
+/* ---- TLS handshake ---- */
+
 /* Perform TLS handshake on an already-connected socket.
+ * Caller must set c->tls_verify and load CA certs (if verifying) before calling.
  * Returns PICO_OK or PICO_ERR_TLS. */
 int pico_tls_handshake(PicoConn *c, const char *hostname) {
     mbedtls_ssl_init(&c->ssl);
@@ -142,9 +223,18 @@ int pico_tls_handshake(PicoConn *c, const char *hostname) {
                                      MBEDTLS_SSL_PRESET_DEFAULT) != 0)
         return PICO_ERR_TLS;
 
-    /* Skip certificate verification for now — cookbook is local/trusted.
-     * TODO: add CA cert loading for production use. */
-    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
+    /* Certificate verification: REQUIRED by default, NONE if opted out */
+    if (c->tls_verify && c->cacert_init) {
+        mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_ca_chain(&c->conf, &c->cacert, NULL);
+    } else if (c->tls_verify) {
+        /* Verification requested but no CA certs loaded — fail safe.
+         * This shouldn't happen (caller loads CAs before handshake). */
+        mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    } else {
+        mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
+    }
+
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
 
     if (mbedtls_ssl_setup(&c->ssl, &c->conf) != 0)
@@ -609,6 +699,17 @@ static int pico_request_once(const char *method,
     /* TLS handshake if needed */
 #ifdef PICO_HTTP_TLS
     if (use_tls) {
+        /* Determine verification mode and load CA certificates */
+        int noverify = (opts && opts->tls_noverify);
+        conn.tls_verify = !noverify;
+        if (conn.tls_verify) {
+            if (opts && opts->ca_data && opts->ca_data_len > 0)
+                pico_load_ca_data(&conn, opts->ca_data, opts->ca_data_len);
+            else if (opts && opts->ca_file)
+                pico_load_ca_file(&conn, opts->ca_file);
+            else
+                pico_load_system_ca(&conn);
+        }
         int tls_rc = pico_tls_handshake(&conn, host);
         if (tls_rc != PICO_OK) {
             pico_conn_close(&conn);
@@ -1084,6 +1185,16 @@ static int pico_request_once_stream(const char *host, int port, const char *path
 
 #ifdef PICO_HTTP_TLS
     if (use_tls) {
+        int noverify = (opts && opts->tls_noverify);
+        conn.tls_verify = !noverify;
+        if (conn.tls_verify) {
+            if (opts && opts->ca_data && opts->ca_data_len > 0)
+                pico_load_ca_data(&conn, opts->ca_data, opts->ca_data_len);
+            else if (opts && opts->ca_file)
+                pico_load_ca_file(&conn, opts->ca_file);
+            else
+                pico_load_system_ca(&conn);
+        }
         int tls_rc = pico_tls_handshake(&conn, host);
         if (tls_rc != PICO_OK) {
             pico_conn_close(&conn);

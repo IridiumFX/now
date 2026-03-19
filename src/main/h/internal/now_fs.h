@@ -45,4 +45,7 @@ NOW_API void now_filelist_free(NowFileList *fl);
 NOW_API int now_discover_sources(const char *basedir, const char *dir,
                                   const char **exts, NowFileList *out);
 
+/* Copy a file from src to dst. Returns 0 on success, -1 on error. */
+NOW_API int now_file_copy(const char *src, const char *dst);
+
 #endif /* NOW_FS_H */

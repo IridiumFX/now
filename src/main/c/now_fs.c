@@ -291,3 +291,22 @@ NOW_API int now_discover_sources(const char *basedir, const char *dir,
     free(full);
     return discover_recursive(basedir, dir, exts, out);
 }
+
+NOW_API int now_file_copy(const char *src, const char *dst) {
+    if (!src || !dst) return -1;
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+
+    char buf[8192];
+    size_t n;
+    int err = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { err = -1; break; }
+    }
+
+    fclose(out);
+    fclose(in);
+    return err;
+}

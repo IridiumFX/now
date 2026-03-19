@@ -27,6 +27,7 @@
 #include "now_trust.h"
 #include "now_repro.h"
 #include "now_advisory.h"
+#include "now_cache.h"
 #include "pasta.h"
 #include "alforno.h"
 
@@ -158,6 +159,8 @@ static void usage(void) {
         "  yank       Yank a published version: yank <g:a:v> --repo URL\n"
         "  compile-db   Generate compile_commands.json for IDE/LSP\n"
         "  dep:updates  Check dependencies for newer versions\n"
+        "  cache:clean  Remove all cached build objects\n"
+        "  cache:stats  Show build cache statistics\n"
         "  cache:mirror Mirror artifacts from registry to local cache\n"
         "  export:cmake  Generate CMakeLists.txt from now.pasta\n"
         "  export:make   Generate Makefile from now.pasta\n"
@@ -656,6 +659,20 @@ int main(int argc, char *argv[]) {
         }
         printf("yanked %s\n", coord_str);
         return 0;
+    }
+
+    if (strcmp(phase, "cache:clean") == 0) {
+        int rc = now_cache_clean();
+        if (rc < 0) {
+            fprintf(stderr, "error: failed to clean build cache\n");
+            return 1;
+        }
+        if (verbose) fprintf(stderr, "build cache cleaned\n");
+        return 0;
+    }
+
+    if (strcmp(phase, "cache:stats") == 0) {
+        return now_cache_print_stats();
     }
 
     if (strcmp(phase, "cache:mirror") == 0) {

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #ifdef _WIN32
   #include <direct.h>
   #define rmdir _rmdir
@@ -30,6 +31,7 @@
 #include "now_advisory.h"
 #include "now_auth.h"
 #include "now_module.h"
+#include "now_cache.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -1097,6 +1099,66 @@ static void test_pico_http_stream_callback_type(void) {
     ASSERT_NOT_NULL((void *)(size_t)fn);
     fn = stream_abort_fn;
     ASSERT_NOT_NULL((void *)(size_t)fn);
+    PASS();
+}
+
+static void test_pico_http_tls_noverify_option(void) {
+    TEST("pico_http: tls_noverify option accepted");
+    /* Verify that PicoHttpOptions with tls_noverify compiles and the
+     * option is propagated (connect will fail, but no crash). */
+    PicoHttpResponse res;
+    PicoHttpOptions opts = {0};
+    opts.tls_noverify = 1;
+    opts.connect_timeout_ms = 500;
+    int rc = pico_http_get("127.0.0.1", 1, "/", &opts, &res);
+    /* Expect connect failure — we just care that the option didn't crash */
+    ASSERT_EQ(rc, PICO_ERR_CONNECT);
+    PASS();
+}
+
+static void test_pico_http_tls_options_zero_init(void) {
+    TEST("pico_http: zero-init options means verify enabled");
+    /* Verify that zero-initialized PicoHttpOptions has tls_noverify=0,
+     * meaning verification is the default. */
+    PicoHttpOptions opts = {0};
+    ASSERT_EQ(opts.tls_noverify, 0);
+    if (opts.ca_file != NULL) { FAIL("expected NULL ca_file"); return; }
+    if (opts.ca_data != NULL) { FAIL("expected NULL ca_data"); return; }
+    ASSERT_EQ((int)opts.ca_data_len, 0);
+    PASS();
+}
+
+static void test_pico_http_tls_ca_file_option(void) {
+    TEST("pico_http: ca_file option accepted");
+    PicoHttpResponse res;
+    PicoHttpOptions opts = {0};
+    opts.ca_file = "/nonexistent/ca.pem";
+    opts.connect_timeout_ms = 500;
+    /* Will fail to connect, but ensures the ca_file path doesn't crash */
+    int rc = pico_http_get("127.0.0.1", 1, "/", &opts, &res);
+    ASSERT_EQ(rc, PICO_ERR_CONNECT);
+    PASS();
+}
+
+static void test_pico_ws_tls_noverify_option(void) {
+    TEST("pico_ws: tls_noverify option accepted");
+    PicoWsOptions opts = {0};
+    opts.tls_noverify = 1;
+    opts.connect_timeout_ms = 500;
+    int err = 0;
+    PicoWs *ws = pico_ws_connect("ws://127.0.0.1:1/ws", &opts, &err);
+    if (ws != NULL) { FAIL("expected NULL"); pico_ws_close(ws); return; }
+    ASSERT_EQ(err, PICO_WS_ERR_CONNECT);
+    PASS();
+}
+
+static void test_pico_ws_tls_options_zero_init(void) {
+    TEST("pico_ws: zero-init options means verify enabled");
+    PicoWsOptions opts = {0};
+    ASSERT_EQ(opts.tls_noverify, 0);
+    if (opts.ca_file != NULL) { FAIL("expected NULL ca_file"); return; }
+    if (opts.ca_data != NULL) { FAIL("expected NULL ca_data"); return; }
+    ASSERT_EQ((int)opts.ca_data_len, 0);
     PASS();
 }
 
@@ -4107,6 +4169,589 @@ static void test_basta_metadata_fields(void) {
     PASS();
 }
 
+/* ---- Ed25519 tests ---- */
+
+/* Helper: convert hex string to bytes */
+static void hex_to_bytes(const char *hex, unsigned char *out, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned int byte;
+        sscanf(hex + i * 2, "%02x", &byte);
+        out[i] = (unsigned char)byte;
+    }
+}
+
+static void test_ed25519_keypair(void) {
+    TEST("ed25519: keypair from seed");
+    unsigned char seed[32];
+    hex_to_bytes("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                 seed, 32);
+
+    unsigned char pub[32], priv[64];
+    int rc = now_ed25519_keypair(pub, priv, seed);
+    if (rc != 0) { FAIL("keypair failed"); return; }
+
+    unsigned char expected_pub[32];
+    hex_to_bytes("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                 expected_pub, 32);
+    if (memcmp(pub, expected_pub, 32) != 0) {
+        FAIL("public key mismatch"); return;
+    }
+    PASS();
+}
+
+static void test_ed25519_sign_verify(void) {
+    TEST("ed25519: sign and verify roundtrip");
+    /* Generate a keypair */
+    unsigned char seed[32];
+    hex_to_bytes("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                 seed, 32);
+
+    unsigned char pub[32], priv[64];
+    now_ed25519_keypair(pub, priv, seed);
+
+    /* Sign the empty message (RFC 8032 Test Vector 1) */
+    unsigned char sig[64];
+    const unsigned char msg[] = "";
+    int rc = now_ed25519_sign(sig, msg, 0, priv);
+    if (rc != 0) { FAIL("sign failed"); return; }
+
+    /* Verify */
+    rc = now_ed25519_verify(sig, msg, 0, pub);
+    if (rc != 0) { FAIL("verify failed"); return; }
+    PASS();
+}
+
+static void test_ed25519_verify_rfc8032_1(void) {
+    TEST("ed25519: verify RFC 8032 test vector 1");
+    unsigned char pub[32], sig[64];
+    hex_to_bytes("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                 pub, 32);
+    hex_to_bytes("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                 sig, 64);
+
+    int rc = now_ed25519_verify(sig, (const unsigned char *)"", 0, pub);
+    if (rc != 0) { FAIL("verify should pass"); return; }
+    PASS();
+}
+
+static void test_ed25519_verify_rfc8032_2(void) {
+    TEST("ed25519: verify RFC 8032 test vector 2");
+    unsigned char pub[32], sig[64];
+    hex_to_bytes("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+                 pub, 32);
+    hex_to_bytes("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+                 sig, 64);
+
+    unsigned char msg[1] = {0x72};
+    int rc = now_ed25519_verify(sig, msg, 1, pub);
+    if (rc != 0) { FAIL("verify should pass"); return; }
+    PASS();
+}
+
+static void test_ed25519_verify_bad_sig(void) {
+    TEST("ed25519: reject tampered signature");
+    unsigned char pub[32], sig[64];
+    hex_to_bytes("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                 pub, 32);
+    hex_to_bytes("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                 sig, 64);
+
+    /* Tamper with signature */
+    sig[0] ^= 0x01;
+
+    int rc = now_ed25519_verify(sig, (const unsigned char *)"", 0, pub);
+    if (rc == 0) { FAIL("should reject tampered sig"); return; }
+    PASS();
+}
+
+static void test_ed25519_verify_wrong_msg(void) {
+    TEST("ed25519: reject wrong message");
+    unsigned char pub[32], sig[64];
+    hex_to_bytes("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                 pub, 32);
+    hex_to_bytes("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                 sig, 64);
+
+    unsigned char wrong[] = "wrong message";
+    int rc = now_ed25519_verify(sig, wrong, sizeof(wrong) - 1, pub);
+    if (rc == 0) { FAIL("should reject wrong message"); return; }
+    PASS();
+}
+
+static void test_ed25519_null_safety(void) {
+    TEST("ed25519: null safety");
+    if (now_ed25519_verify(NULL, NULL, 0, NULL) == 0) { FAIL("should reject NULL"); return; }
+    if (now_ed25519_sign(NULL, NULL, 0, NULL) == 0) { FAIL("should reject NULL"); return; }
+    if (now_ed25519_keypair(NULL, NULL, NULL) == 0) { FAIL("should reject NULL"); return; }
+    PASS();
+}
+
+/* ---- Build Cache ---- */
+
+static void test_cache_key_deterministic(void) {
+    TEST("cache: key is deterministic");
+    char *k1 = now_cache_key("abc123", "def456", "/usr/bin/gcc");
+    char *k2 = now_cache_key("abc123", "def456", "/usr/bin/gcc");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (!k1 || !k2 || strcmp(k1, k2) != 0) { FAIL("keys not equal"); free(k1); free(k2); return; }
+    ASSERT_EQ((int)strlen(k1), 64);  /* SHA-256 hex */
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_cache_key_varies_source(void) {
+    TEST("cache: different source → different key");
+    char *k1 = now_cache_key("aaa", "flags", "/usr/bin/gcc");
+    char *k2 = now_cache_key("bbb", "flags", "/usr/bin/gcc");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (strcmp(k1, k2) == 0) { FAIL("keys should differ"); free(k1); free(k2); return; }
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_cache_key_varies_flags(void) {
+    TEST("cache: different flags → different key");
+    char *k1 = now_cache_key("src", "flags_a", "/usr/bin/gcc");
+    char *k2 = now_cache_key("src", "flags_b", "/usr/bin/gcc");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (strcmp(k1, k2) == 0) { FAIL("keys should differ"); free(k1); free(k2); return; }
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_cache_key_varies_compiler(void) {
+    TEST("cache: different compiler → different key");
+    char *k1 = now_cache_key("src", "flags", "/usr/bin/gcc");
+    char *k2 = now_cache_key("src", "flags", "/usr/bin/clang");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (strcmp(k1, k2) == 0) { FAIL("keys should differ"); free(k1); free(k2); return; }
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_cache_path_sharding(void) {
+    TEST("cache: path uses two-level sharding");
+    char *path = now_cache_path("abcdef0123456789abcdef0123456789"
+                                 "abcdef0123456789abcdef0123456789", ".o");
+    ASSERT_NOT_NULL(path);
+    /* Path should contain /ab/cd/ shard directories */
+    if (!strstr(path, "/ab/") && !strstr(path, "\\ab\\")) {
+        FAIL("expected /ab/ shard in path");
+        free(path);
+        return;
+    }
+    if (!strstr(path, "/cd/") && !strstr(path, "\\cd\\") &&
+        !strstr(path, "/ab/cd") && !strstr(path, "\\ab\\cd")) {
+        FAIL("expected /cd/ shard in path");
+        free(path);
+        return;
+    }
+    /* Should end with .o */
+    size_t plen = strlen(path);
+    if (plen < 2 || strcmp(path + plen - 2, ".o") != 0) {
+        FAIL("expected .o extension");
+        free(path);
+        return;
+    }
+    free(path);
+    PASS();
+}
+
+static void test_cache_store_restore(void) {
+    TEST("cache: store and restore roundtrip");
+    /* Create a temp file with known content */
+    const char *content = "hello cache world 12345";
+    const char *tmpfile = "target/_cache_test_src.o";
+    now_mkdir_p("target");
+    FILE *f = fopen(tmpfile, "wb");
+    if (!f) { FAIL("cannot create temp file"); return; }
+    fwrite(content, 1, strlen(content), f);
+    fclose(f);
+
+    /* Store it */
+    char *key = now_cache_key("store_restore_test_hash", "flags_hash", "/cc");
+    ASSERT_NOT_NULL(key);
+    int rc = now_cache_store(key, tmpfile, ".o");
+    ASSERT_EQ(rc, 0);
+
+    /* Restore to a different path */
+    const char *restored = "target/_cache_test_dst.o";
+    rc = now_cache_restore(key, restored, ".o");
+    ASSERT_EQ(rc, 0);
+
+    /* Verify content matches */
+    FILE *f2 = fopen(restored, "rb");
+    if (!f2) { FAIL("restored file not found"); free(key); return; }
+    char buf[64] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f2);
+    fclose(f2);
+    ASSERT_EQ((int)n, (int)strlen(content));
+    if (strcmp(buf, content) != 0) { FAIL("content mismatch"); free(key); return; }
+
+    /* Cleanup */
+    remove(tmpfile);
+    remove(restored);
+    free(key);
+    PASS();
+}
+
+static void test_cache_restore_miss(void) {
+    TEST("cache: restore miss returns -1");
+    char *key = now_cache_key("nonexistent_hash_xyz", "flags", "/cc");
+    ASSERT_NOT_NULL(key);
+    int rc = now_cache_restore(key, "target/_miss.o", ".o");
+    ASSERT_EQ(rc, -1);
+    free(key);
+    PASS();
+}
+
+static void test_cache_clean_works(void) {
+    TEST("cache: clean removes stored objects");
+    /* Store an object */
+    const char *tmpfile = "target/_cache_clean_test.o";
+    now_mkdir_p("target");
+    FILE *f = fopen(tmpfile, "wb");
+    if (!f) { FAIL("cannot create temp file"); return; }
+    fwrite("data", 1, 4, f);
+    fclose(f);
+
+    char *key = now_cache_key("clean_test_hash", "flags", "/cc");
+    ASSERT_NOT_NULL(key);
+    now_cache_store(key, tmpfile, ".o");
+
+    /* Verify it's there */
+    ASSERT_EQ(now_cache_restore(key, "target/_cache_clean_verify.o", ".o"), 0);
+    remove("target/_cache_clean_verify.o");
+
+    /* Clean */
+    now_cache_clean();
+
+    /* Should be gone */
+    int rc = now_cache_restore(key, "target/_cache_clean_verify.o", ".o");
+    ASSERT_EQ(rc, -1);
+
+    remove(tmpfile);
+    free(key);
+    PASS();
+}
+
+/* ---- Depfile parsing ---- */
+
+static void test_depfile_parse_simple(void) {
+    TEST("depfile: parse simple .d file");
+    now_mkdir_p("target");
+    const char *depfile = "target/_test_simple.d";
+    FILE *f = fopen(depfile, "w");
+    if (!f) { FAIL("cannot create depfile"); return; }
+    fprintf(f, "target/obj/main/foo.c.o: src/main/c/foo.c src/main/h/foo.h src/main/h/bar.h\n");
+    fclose(f);
+
+    NowDepList deps = {0};
+    int rc = now_depfile_parse(depfile, "src/main/c/foo.c", &deps);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((int)deps.count, 2);  /* foo.h and bar.h, source excluded */
+    /* Verify headers are present (order may vary) */
+    int found_foo_h = 0, found_bar_h = 0;
+    for (size_t i = 0; i < deps.count; i++) {
+        if (strstr(deps.paths[i], "foo.h")) found_foo_h = 1;
+        if (strstr(deps.paths[i], "bar.h")) found_bar_h = 1;
+    }
+    ASSERT_EQ(found_foo_h, 1);
+    ASSERT_EQ(found_bar_h, 1);
+    now_deplist_free(&deps);
+    remove(depfile);
+    PASS();
+}
+
+static void test_depfile_parse_multiline(void) {
+    TEST("depfile: parse multiline .d file with continuations");
+    now_mkdir_p("target");
+    const char *depfile = "target/_test_multi.d";
+    FILE *f = fopen(depfile, "w");
+    if (!f) { FAIL("cannot create depfile"); return; }
+    fprintf(f, "target/obj/main/foo.c.o: src/main/c/foo.c \\\n"
+               "  src/main/h/foo.h \\\n"
+               "  src/main/h/bar.h \\\n"
+               "  src/main/h/baz.h\n");
+    fclose(f);
+
+    NowDepList deps = {0};
+    int rc = now_depfile_parse(depfile, "src/main/c/foo.c", &deps);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((int)deps.count, 3);  /* foo.h, bar.h, baz.h */
+    now_deplist_free(&deps);
+    remove(depfile);
+    PASS();
+}
+
+static void test_depfile_parse_missing(void) {
+    TEST("depfile: missing file returns -1");
+    NowDepList deps = {0};
+    int rc = now_depfile_parse("target/_nonexistent.d", "foo.c", &deps);
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_depfile_parse_msvc(void) {
+    TEST("depfile: parse MSVC /showIncludes output");
+    const char *output =
+        "foo.c\n"
+        "Note: including file: C:\\sdk\\include\\stdio.h\n"
+        "Note: including file:   C:\\project\\src\\foo.h\n"
+        "some compiler output line\n"
+        "Note: including file: C:\\project\\src\\bar.h\n";
+    size_t len = strlen(output);
+
+    NowDepList deps = {0};
+    int rc = now_depfile_parse_msvc(output, len, &deps);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((int)deps.count, 3);
+    /* Verify paths are trimmed */
+    int found_stdio = 0, found_foo = 0, found_bar = 0;
+    for (size_t i = 0; i < deps.count; i++) {
+        if (strstr(deps.paths[i], "stdio.h")) found_stdio = 1;
+        if (strstr(deps.paths[i], "foo.h")) found_foo = 1;
+        if (strstr(deps.paths[i], "bar.h")) found_bar = 1;
+    }
+    ASSERT_EQ(found_stdio, 1);
+    ASSERT_EQ(found_foo, 1);
+    ASSERT_EQ(found_bar, 1);
+    now_deplist_free(&deps);
+    PASS();
+}
+
+/* ---- Dep-aware cache ---- */
+
+static void test_cache_restore_ex_no_deps(void) {
+    TEST("cache: restore_ex with no .deps sidecar returns miss");
+    /* Use a fresh key that has no .deps file */
+    char *key = now_cache_key("no_deps_test_xyz", "flags", "/cc");
+    ASSERT_NOT_NULL(key);
+    int rc = now_cache_restore_ex(key, "target/_nodeps.o", ".o");
+    ASSERT_EQ(rc, -1);
+    free(key);
+    PASS();
+}
+
+static void test_cache_store_restore_ex_with_deps(void) {
+    TEST("cache: store_ex/restore_ex with deps roundtrip");
+    now_mkdir_p("target");
+
+    /* Create fake object */
+    const char *objfile = "target/_deptest_obj.o";
+    FILE *f = fopen(objfile, "wb");
+    if (!f) { FAIL("cannot create obj"); return; }
+    fwrite("objdata", 1, 7, f);
+    fclose(f);
+
+    /* Create fake header dep */
+    const char *hdr = "target/_deptest_hdr.h";
+    f = fopen(hdr, "w");
+    if (!f) { FAIL("cannot create header"); remove(objfile); return; }
+    fprintf(f, "#define FOO 1\n");
+    fclose(f);
+
+    /* Store with deps */
+    char *skey = now_cache_key("deptest_src_hash", "deptest_flags", "/gcc");
+    ASSERT_NOT_NULL(skey);
+
+    NowDepList deps = {0};
+    deps.paths = (char **)malloc(sizeof(char *));
+    deps.paths[0] = strdup(hdr);
+    deps.count = 1;
+    deps.capacity = 1;
+
+    int rc = now_cache_store_ex(skey, objfile, ".o", &deps);
+    ASSERT_EQ(rc, 0);
+
+    /* Restore should succeed */
+    const char *dst = "target/_deptest_restore.o";
+    rc = now_cache_restore_ex(skey, dst, ".o");
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(now_path_exists(dst), 1);
+    remove(dst);
+
+    /* Modify header → restore should fail */
+    f = fopen(hdr, "w");
+    if (f) {
+        fprintf(f, "#define FOO 2\n");
+        fclose(f);
+    }
+    rc = now_cache_restore_ex(skey, dst, ".o");
+    ASSERT_EQ(rc, -1);
+
+    /* Cleanup */
+    now_deplist_free(&deps);
+    free(skey);
+    remove(objfile);
+    remove(hdr);
+    remove(dst);
+    PASS();
+}
+
+static void test_cache_restore_ex_dep_deleted(void) {
+    TEST("cache: restore_ex fails when dep file deleted");
+    now_mkdir_p("target");
+
+    /* Create fake object and header */
+    const char *objfile = "target/_deldep_obj.o";
+    FILE *f = fopen(objfile, "wb");
+    if (!f) { FAIL("cannot create obj"); return; }
+    fwrite("obj", 1, 3, f);
+    fclose(f);
+
+    const char *hdr = "target/_deldep_hdr.h";
+    f = fopen(hdr, "w");
+    if (!f) { FAIL("cannot create header"); remove(objfile); return; }
+    fprintf(f, "header\n");
+    fclose(f);
+
+    char *skey = now_cache_key("deldep_src", "deldep_flags", "/gcc");
+    ASSERT_NOT_NULL(skey);
+
+    NowDepList deps = {0};
+    deps.paths = (char **)malloc(sizeof(char *));
+    deps.paths[0] = strdup(hdr);
+    deps.count = 1;
+    deps.capacity = 1;
+
+    now_cache_store_ex(skey, objfile, ".o", &deps);
+
+    /* Delete the dep file */
+    remove(hdr);
+
+    /* Restore should fail */
+    int rc = now_cache_restore_ex(skey, "target/_deldep_restore.o", ".o");
+    ASSERT_EQ(rc, -1);
+
+    now_deplist_free(&deps);
+    free(skey);
+    remove(objfile);
+    PASS();
+}
+
+/* ---- Manifest dep tracking ---- */
+
+static void test_manifest_set_deps(void) {
+    TEST("manifest: set_deps stores dep info");
+    NowManifest m;
+    now_manifest_init(&m);
+    now_manifest_set(&m, "foo.c", "foo.o", "hash1", "fhash", 12345);
+
+    const char *dpaths[] = {"src/main/h/foo.h", "src/main/h/bar.h"};
+    const char *dhashes[] = {"aaa", "bbb"};
+    int rc = now_manifest_set_deps(&m, "foo.c", dpaths, dhashes, 2);
+    ASSERT_EQ(rc, 0);
+
+    const NowManifestEntry *e = now_manifest_find(&m, "foo.c");
+    ASSERT_NOT_NULL(e);
+    ASSERT_EQ((int)e->dep_count, 2);
+    if (strcmp(e->deps[0], "src/main/h/foo.h") != 0) { FAIL("dep[0] mismatch"); now_manifest_free(&m); return; }
+    if (strcmp(e->dep_hashes[1], "bbb") != 0) { FAIL("dep_hash[1] mismatch"); now_manifest_free(&m); return; }
+    now_manifest_free(&m);
+    PASS();
+}
+
+static void test_manifest_deps_roundtrip(void) {
+    TEST("manifest: deps survive save/load roundtrip");
+    now_mkdir_p("target");
+
+    NowManifest m;
+    now_manifest_init(&m);
+    now_manifest_set(&m, "foo.c", "foo.o", "hash1", "fhash", 12345);
+
+    const char *dpaths[] = {"dep_a.h", "dep_b.h"};
+    const char *dhashes[] = {"aaa111", "bbb222"};
+    now_manifest_set_deps(&m, "foo.c", dpaths, dhashes, 2);
+
+    const char *mpath = "target/_test_manifest_deps";
+    now_manifest_save(&m, mpath);
+    now_manifest_free(&m);
+
+    /* Reload */
+    NowManifest m2;
+    now_manifest_load(&m2, mpath);
+    const NowManifestEntry *e = now_manifest_find(&m2, "foo.c");
+    ASSERT_NOT_NULL(e);
+    ASSERT_EQ((int)e->dep_count, 2);
+    if (strcmp(e->deps[0], "dep_a.h") != 0) { FAIL("dep path mismatch"); now_manifest_free(&m2); return; }
+    if (strcmp(e->dep_hashes[0], "aaa111") != 0) { FAIL("dep hash mismatch"); now_manifest_free(&m2); return; }
+    if (strcmp(e->deps[1], "dep_b.h") != 0) { FAIL("dep[1] path mismatch"); now_manifest_free(&m2); return; }
+    if (strcmp(e->dep_hashes[1], "bbb222") != 0) { FAIL("dep_hash[1] mismatch"); now_manifest_free(&m2); return; }
+    now_manifest_free(&m2);
+    remove(mpath);
+    PASS();
+}
+
+static void test_manifest_needs_rebuild_dep_changed(void) {
+    TEST("manifest: needs_rebuild detects dep change");
+    now_mkdir_p("target");
+
+    /* Create a real header file so we can hash it */
+    const char *hdr = "target/_test_dep_header.h";
+    FILE *f = fopen(hdr, "w");
+    if (!f) { FAIL("cannot create header"); return; }
+    fprintf(f, "original\n");
+    fclose(f);
+
+    /* Create a real source file */
+    const char *srcfile = "target/_test_dep_src.c";
+    f = fopen(srcfile, "w");
+    if (!f) { FAIL("cannot create source"); remove(hdr); return; }
+    fprintf(f, "source\n");
+    fclose(f);
+
+    char *src_hash = now_sha256_file(srcfile);
+    char *dep_hash = now_sha256_file(hdr);
+    ASSERT_NOT_NULL(src_hash);
+    ASSERT_NOT_NULL(dep_hash);
+
+    struct stat st;
+    stat(srcfile, &st);
+
+    NowManifest m;
+    now_manifest_init(&m);
+    now_manifest_set(&m, "_test_dep_src.c", "target/obj.o", src_hash, "fhash",
+                     (long long)st.st_mtime);
+
+    const char *dpaths[] = {hdr};
+    const char *dhashes[] = {dep_hash};
+    now_manifest_set_deps(&m, "_test_dep_src.c", dpaths, dhashes, 1);
+
+    /* Create a fake object file */
+    f = fopen("target/obj.o", "w");
+    if (f) { fwrite("x", 1, 1, f); fclose(f); }
+
+    /* Should be up to date */
+    const NowManifestEntry *e = now_manifest_find(&m, "_test_dep_src.c");
+    int rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash");
+    ASSERT_EQ(rebuild, 0);
+
+    /* Modify header */
+    f = fopen(hdr, "w");
+    if (f) { fprintf(f, "modified\n"); fclose(f); }
+
+    /* Now should need rebuild */
+    rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash");
+    ASSERT_EQ(rebuild, 1);
+
+    now_manifest_free(&m);
+    free(src_hash);
+    free(dep_hash);
+    remove(hdr);
+    remove(srcfile);
+    remove("target/obj.o");
+    PASS();
+}
+
 int main(void) {
     printf("now test suite\n");
     printf("==============\n\n");
@@ -4196,6 +4841,9 @@ int main(void) {
     test_pico_http_stream_invalid_args();
     test_pico_http_stream_connect_failure();
     test_pico_http_stream_callback_type();
+    test_pico_http_tls_noverify_option();
+    test_pico_http_tls_options_zero_init();
+    test_pico_http_tls_ca_file_option();
 
     printf("\n  WebSocket client:\n");
     test_pico_ws_version();
@@ -4204,6 +4852,8 @@ int main(void) {
     test_pico_ws_bad_url();
     test_pico_ws_connect_failure();
     test_pico_ws_close_null();
+    test_pico_ws_tls_noverify_option();
+    test_pico_ws_tls_options_zero_init();
 
     printf("\n  Procure:\n");
     test_repo_dep_path();
@@ -4287,6 +4937,15 @@ int main(void) {
     test_trust_policy_trusted();
     test_trust_policy_from_project();
     test_trust_null_safety();
+
+    printf("\n  Ed25519:\n");
+    test_ed25519_keypair();
+    test_ed25519_sign_verify();
+    test_ed25519_verify_rfc8032_1();
+    test_ed25519_verify_rfc8032_2();
+    test_ed25519_verify_bad_sig();
+    test_ed25519_verify_wrong_msg();
+    test_ed25519_null_safety();
 
     printf("\n  Advisory guards:\n");
     test_advisory_db_init_free();
@@ -4381,6 +5040,32 @@ int main(void) {
     test_basta_extract_null_safety();
     test_basta_extract_missing_file();
     test_basta_package_roundtrip();
+
+    printf("\n  Build cache:\n");
+    test_cache_key_deterministic();
+    test_cache_key_varies_source();
+    test_cache_key_varies_flags();
+    test_cache_key_varies_compiler();
+    test_cache_path_sharding();
+    test_cache_store_restore();
+    test_cache_restore_miss();
+    test_cache_clean_works();
+
+    printf("\n  Depfile parsing:\n");
+    test_depfile_parse_simple();
+    test_depfile_parse_multiline();
+    test_depfile_parse_missing();
+    test_depfile_parse_msvc();
+
+    printf("\n  Dep-aware cache:\n");
+    test_cache_restore_ex_no_deps();
+    test_cache_store_restore_ex_with_deps();
+    test_cache_restore_ex_dep_deleted();
+
+    printf("\n  Manifest deps:\n");
+    test_manifest_set_deps();
+    test_manifest_deps_roundtrip();
+    test_manifest_needs_rebuild_dep_changed();
 
     printf("\n  Build integration:\n");
     test_build_hello();
