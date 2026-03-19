@@ -21,6 +21,18 @@ NOW_API int now_export_cmake(const NowProject *project, const char *basedir,
 NOW_API int now_export_make(const NowProject *project, const char *basedir,
                               const char *outpath, NowResult *result);
 
+/* Generate a meson.build from a project descriptor.
+ * outpath: destination file path (e.g. "meson.build").
+ * Returns 0 on success. */
+NOW_API int now_export_meson(const NowProject *project, const char *basedir,
+                               const char *outpath, NowResult *result);
+
+/* Generate a BUILD.bazel from a project descriptor.
+ * outpath: destination file path (e.g. "BUILD.bazel").
+ * Returns 0 on success. */
+NOW_API int now_export_bazel(const NowProject *project, const char *basedir,
+                               const char *outpath, NowResult *result);
+
 /* Generate a pom.xml from a project descriptor.
  * outpath: destination file path (e.g. "pom.xml").
  * Returns 0 on success. */

@@ -50,7 +50,7 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_ci.c` | `now_ci.h` | CI integration: structured output, exit codes, env detection, `now ci` lifecycle |
 | `now_layer.c` | `now_layer.h` | Cascading config layers: baseline, file/project layers, section merge, audit trail |
 | `now_arch.c` | `now_arch.h` | Platform triples: parse, format, host detect, wildcard match, native detection |
-| `now_export.c` | `now_export.h` | Build system export: CMakeLists.txt and Makefile generation from NowProject |
+| `now_export.c` | `now_export.h` | Build system export: CMakeLists.txt, Makefile, meson.build, BUILD.bazel generation from NowProject |
 | `now_trust.c` | `now_trust.h` | Signing and trust: trust store, scope matching, policy, minisign verification |
 | `now_repro.c` | `now_repro.h` | Reproducible builds: timebase, prefix maps, sorted inputs, date macro neutralization |
 | `now_advisory.c` | `now_advisory.h` | Advisory guards: advisory DB loading, severity checking, override mechanism, dep checking |
@@ -504,6 +504,41 @@ Zero-lock-in escape hatch — generates a standalone GNU Makefile from `now.past
 - **Clean target**: `make clean` removes `target/` directory
 - **Pattern rules**: separate `%.c.o`, `%.cpp.o` rules for proper multi-language support
 
+### 25b. Meson Export (`now export:meson`)
+
+Zero-lock-in escape hatch — generates a standalone `meson.build` from `now.pasta`:
+
+- **`now export:meson`**: writes `meson.build` in the project root
+- **project()**: language, version, license, default_options (std, optimization, b_lto)
+- **Target types**: `executable()`, `static_library()`, `shared_library()`, `declare_dependency()` (header-only)
+- **Compile settings**: `c_args`/`cpp_args` array with warnings, defines, raw flags
+- **Link settings**: `link_args` array with flags, library dirs, libraries
+- **Include directories**: `include_directories()` with public + private headers
+- **Source discovery**: `run_command('find', ...)` for `.c`, `.cpp`, `.cxx`, `.cc`
+- **Language support**: C and C++ (auto-detects from `langs:`, uses `cpp` language name)
+- **Test target**: `test()` with `executable()` linked against the library
+- **Header-only**: `declare_dependency(include_directories: inc)` — no test/install targets
+- **Dependencies**: listed as comments (cannot auto-resolve across build systems)
+- **Install**: `install_subdir()` for headers, `install : true` on targets
+- **4 tests**: basic shared lib, executable, C++ project, header-only declare_dependency
+
+### 25c. Bazel Export (`now export:bazel`)
+
+Zero-lock-in escape hatch — generates a standalone `BUILD.bazel` from `now.pasta`:
+
+- **`now export:bazel`**: writes `BUILD.bazel` in the project root
+- **load()**: `@rules_cc//cc:defs.bzl` for `cc_binary`, `cc_library`, `cc_test`
+- **package()**: `default_visibility = ["//visibility:public"]`
+- **Target types**: `cc_binary` (executable), `cc_library` (static/shared/header-only)
+- **COPTS**: `-std=`, optimization, warnings, defines, raw flags
+- **LINKOPTS**: raw flags, library dirs (`-L`), libraries (`-l`)
+- **Source patterns**: `glob()` for `.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`
+- **includes + strip_include_prefix**: proper header path handling
+- **Static libraries**: `linkstatic = True`
+- **Test target**: `cc_test()` with `deps` linking to library target
+- **Dependencies**: listed as comments (cannot auto-resolve across build systems)
+- **5 tests**: basic cc_library, cc_binary, static linkstatic, C++ globs, deps comments
+
 ### 26. Reproducible Builds — Guide Step 20
 
 Determinism measures for bit-identical builds across machines and time:
@@ -597,7 +632,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-238 tests across all modules:
+247 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -625,7 +660,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Dep confusion | 7 | Exact match, dotted child, no false positive, multiple prefixes, NULL-safe, POM load, procure fail |
 | Layers | 8 | Stack init, baseline sections, file load, open merge, locked audit, !exclude:, audit format, push project |
 | Multi-arch | 9 | Triple parse, shorthand fill, format, dir name, compare, wildcard match exact, wildcard *, host detect, native detection |
-| Export | 9 | CMake generation (4): shared lib, executable, deps, C++; Makefile generation (5): shared, executable, static, deps, C++ |
+| Export | 18 | CMake (4): shared, executable, deps, C++; Make (5): shared, executable, static, deps, C++; Meson (4): shared, executable, C++, header-only; Bazel (5): cc_library, cc_binary, static, C++, deps |
 | Repro | 14 | Config init/bool/map/none, timebase zero/now/literal, compile flags GCC/MSVC, link flags/MSVC, sort, disabled, null |
 | Trust | 12 | Init/free, add, scope wildcard/prefix/exact, find/no-match, policy none/signed/trusted, project parse, null safety |
 | Advisory | 17 | DB init/free, severity parse/name/blocks, load string, blacklisted, override parse/no-expires/expiry, find override, check dep match/no-match/overridden, blacklisted-no-override, medium warning, report format, null safety |
@@ -637,7 +672,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 238 tests pass (228 in CI — build integration test requires gcc in PATH at runtime).
+All 247 tests pass (237 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -717,6 +752,8 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 |------|---------|--------|-------|
 | E1 | `now export:cmake` | **DONE** | Generate CMakeLists.txt from now.pasta — zero lock-in escape hatch |
 | E2 | `now export:make` | **DONE** | Makefile generation: shared/static/executable, C/C++, deps as comments, test+install+clean |
+| E4 | `now export:meson` | **DONE** | Meson build generation: project(), executable/static/shared/header-only, copts, linkopts, test target, install |
+| E5 | `now export:bazel` | **DONE** | Bazel BUILD generation: cc_binary/cc_library/cc_test, COPTS/LINKOPTS, glob() patterns, linkstatic |
 
 ### Post-v1
 
@@ -727,7 +764,6 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | 28 | Embedded platforms | Freestanding output, custom linker scripts, platform registry |
 | 29 | Additional languages | Ada, Fortran, Modula-2, Pascal, and others |
 | E3 | ~~Embedded Ed25519~~ | **DONE** | Native SHA-512 + Ed25519 keypair/sign/verify/file-verify (ref10-style field arithmetic, 7 tests) |
-| E4 | `now export:meson` | Generate meson.build from now.pasta |
 
 **Completed: 27 of 27 v1 steps** (steps 1–12, 14–21, 22–26, E1, E2, CLI, pico networking). All v1 steps done.
 

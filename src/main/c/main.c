@@ -164,6 +164,8 @@ static void usage(void) {
         "  cache:mirror Mirror artifacts from registry to local cache\n"
         "  export:cmake  Generate CMakeLists.txt from now.pasta\n"
         "  export:make   Generate Makefile from now.pasta\n"
+        "  export:meson  Generate meson.build from now.pasta\n"
+        "  export:bazel  Generate BUILD.bazel from now.pasta\n"
         "  export:maven  Generate pom.xml from now.pasta\n"
         "  import:maven  Convert pom.xml to now.pasta\n"
         "  layers:show  Show layer stack and effective configuration\n"
@@ -881,6 +883,34 @@ int main(int argc, char *argv[]) {
             rc = 1;
         } else {
             rc = now_export_make(project, cwd, out, &result);
+            if (rc != 0)
+                fprintf(stderr, "error: %s\n", result.message);
+            else
+                printf("wrote %s\n", out);
+            free(out);
+        }
+
+    } else if (strcmp(phase, "export:meson") == 0) {
+        char *out = now_path_join(cwd, "meson.build");
+        if (!out) {
+            fprintf(stderr, "error: cannot construct output path\n");
+            rc = 1;
+        } else {
+            rc = now_export_meson(project, cwd, out, &result);
+            if (rc != 0)
+                fprintf(stderr, "error: %s\n", result.message);
+            else
+                printf("wrote %s\n", out);
+            free(out);
+        }
+
+    } else if (strcmp(phase, "export:bazel") == 0) {
+        char *out = now_path_join(cwd, "BUILD.bazel");
+        if (!out) {
+            fprintf(stderr, "error: cannot construct output path\n");
+            rc = 1;
+        } else {
+            rc = now_export_bazel(project, cwd, out, &result);
             if (rc != 0)
                 fprintf(stderr, "error: %s\n", result.message);
             else

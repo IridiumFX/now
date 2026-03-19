@@ -62,7 +62,7 @@ ready for surging adoption.
 | 2.1 | ~~Native Ed25519~~ | **DONE** — `now_ed25519.c`: SHA-512, GF(2^255-19), keypair/sign/verify/file-verify, 7 tests |
 | 2.2 | ~~pico_http TLS hardening~~ | **DONE** — `VERIFY_REQUIRED` default, system CA loading (Windows+POSIX), `tls_noverify`/`ca_file`/`ca_data` options, pico_ws wired |
 | 2.3 | ~~Build caching~~ | **DONE** — Content-addressable object cache at `~/.now/cache/objects/`, SHA-256 key, two-level sharding, integrated into build phase, `now cache:clean/stats` CLI. Header-aware: compiler depfiles (`-MD -MF` / `/showIncludes`), ccache-style two-level key (source_key → .deps sidecar → result_key), manifest tracks dep hashes |
-| 2.4 | `export:meson` / `export:bazel` | More escape hatches = lower perceived risk = easier adoption argument |
+| 2.4 | ~~`export:meson` / `export:bazel`~~ | **DONE** — `now export:meson` (meson.build) + `now export:bazel` (BUILD.bazel), 9 tests |
 | 2.5 | Plugin registry | Lets the community extend `now` without gatekeeping every feature |
 
 ---
@@ -109,7 +109,7 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 ```
 Tier 1 complete (1.1-1.5). Pasta ecosystem (P.1-P.3, P.5) complete.
 Maven import/export (3.1) done. Java is a first-class language.
-P.4 (Basta packages) done. 2.1 (native Ed25519) done. 2.2 (TLS hardening) done. 2.3 (build caching) done. Next: 2.4 (export:meson/bazel).
+P.4 (Basta packages) done. 2.1 (native Ed25519) done. 2.2 (TLS hardening) done. 2.3 (build caching) done. 2.4 (export:meson/bazel) done. Next: 2.5 (plugin registry).
 ```
 
 Self-hosting is done. Java + Maven interop bridges the enterprise world.
