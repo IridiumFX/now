@@ -34,6 +34,7 @@
 #include "now_module.h"
 #include "now_cache.h"
 #include "now_sbom.h"
+#include "now_remote.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -381,6 +382,116 @@ static void test_fs_obj_path(void) {
         return;
     }
     free(obj);
+    PASS();
+}
+
+/* ---- Remote cache ---- */
+
+static void test_remote_config_parse_full(void) {
+    TEST("remote: parse config with all fields");
+    const char *input =
+        "{ object_cache: { url: \"http://cache.local:9090\","
+        "  token: \"my-secret\", push: true } }";
+    NowRemoteCacheConfig cfg;
+    int rc = now_remote_config_parse(input, strlen(input), &cfg);
+    ASSERT_EQ(rc, 0);
+    ASSERT_STR(cfg.url, "http://cache.local:9090");
+    ASSERT_STR(cfg.token, "my-secret");
+    ASSERT_EQ(cfg.push, 1);
+    now_remote_config_free(&cfg);
+    PASS();
+}
+
+static void test_remote_config_parse_minimal(void) {
+    TEST("remote: parse config with only url");
+    const char *input = "{ object_cache: { url: \"http://localhost:8080\" } }";
+    NowRemoteCacheConfig cfg;
+    int rc = now_remote_config_parse(input, strlen(input), &cfg);
+    ASSERT_EQ(rc, 0);
+    ASSERT_STR(cfg.url, "http://localhost:8080");
+    ASSERT_NULL(cfg.token);
+    ASSERT_EQ(cfg.push, 0);
+    now_remote_config_free(&cfg);
+    PASS();
+}
+
+static void test_remote_config_parse_no_section(void) {
+    TEST("remote: parse config without object_cache returns -1");
+    const char *input = "{ something_else: \"foo\" }";
+    NowRemoteCacheConfig cfg;
+    int rc = now_remote_config_parse(input, strlen(input), &cfg);
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_remote_config_parse_no_url(void) {
+    TEST("remote: parse config without url returns -1");
+    const char *input = "{ object_cache: { token: \"secret\" } }";
+    NowRemoteCacheConfig cfg;
+    int rc = now_remote_config_parse(input, strlen(input), &cfg);
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_remote_config_free_null(void) {
+    TEST("remote: config_free on zeroed struct is safe");
+    NowRemoteCacheConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    now_remote_config_free(&cfg);
+    now_remote_config_free(NULL);
+    PASS();
+}
+
+static void test_remote_cache_restore_unreachable(void) {
+    TEST("remote: restore from unreachable host returns -1");
+    NowRemoteCacheConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.url = "http://127.0.0.1:1";
+    char outpath[256];
+    snprintf(outpath, sizeof(outpath), "%s/remote_test.o", NOW_TEST_RESOURCES);
+    int rc = now_remote_cache_restore(&cfg, "abcdef1234567890", outpath, ".o");
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_remote_cache_store_push_disabled(void) {
+    TEST("remote: store with push=0 returns -1 immediately");
+    NowRemoteCacheConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.url = "http://127.0.0.1:1";
+    cfg.push = 0;
+    int rc = now_remote_cache_store(&cfg, "abcdef", "/nonexistent.o", ".o");
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_remote_cache_store_unreachable(void) {
+    TEST("remote: store to unreachable host returns -1");
+    NowRemoteCacheConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.url = "http://127.0.0.1:1";
+    cfg.push = 1;
+    /* Need a real file to read */
+    char path[256];
+    snprintf(path, sizeof(path), "%s/minimal.pasta", NOW_TEST_RESOURCES);
+    int rc = now_remote_cache_store(&cfg, "abcdef1234567890", path, ".o");
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_remote_cache_key_url_safe(void) {
+    TEST("remote: cache key is hex-only (URL-safe)");
+    /* now_cache_key returns 64-char hex string */
+    char *key = now_cache_key("abc123", "def456", "/usr/bin/gcc");
+    ASSERT_NOT_NULL(key);
+    /* Verify all chars are hex digits */
+    for (size_t i = 0; key[i]; i++) {
+        char c = key[i];
+        int is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!is_hex) { free(key); FAIL("non-hex char in cache key"); return; }
+    }
+    ASSERT_EQ(strlen(key), (size_t)64);
+    free(key);
     PASS();
 }
 
@@ -5761,6 +5872,17 @@ int main(void) {
     test_manifest_set_deps();
     test_manifest_deps_roundtrip();
     test_manifest_needs_rebuild_dep_changed();
+
+    printf("\n  Remote cache:\n");
+    test_remote_config_parse_full();
+    test_remote_config_parse_minimal();
+    test_remote_config_parse_no_section();
+    test_remote_config_parse_no_url();
+    test_remote_config_free_null();
+    test_remote_cache_restore_unreachable();
+    test_remote_cache_store_push_disabled();
+    test_remote_cache_store_unreachable();
+    test_remote_cache_key_url_safe();
 
     printf("\n  SBOM generation:\n");
     test_sbom_to_json_basic();

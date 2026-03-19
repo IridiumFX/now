@@ -25,6 +25,7 @@
 #include "now_layer.h"
 #include "now_export.h"
 #include "now_plugin_registry.h"
+#include "now_remote.h"
 #include "now_sbom.h"
 #include "now_trust.h"
 #include "now_repro.h"
@@ -163,6 +164,7 @@ static void usage(void) {
         "  dep:updates  Check dependencies for newer versions\n"
         "  cache:clean  Remove all cached build objects\n"
         "  cache:stats  Show build cache statistics\n"
+        "  cache:remote-stats  Show remote cache connectivity and info\n"
         "  cache:mirror Mirror artifacts from registry to local cache\n"
         "  export:cmake  Generate CMakeLists.txt from now.pasta\n"
         "  export:make   Generate Makefile from now.pasta\n"
@@ -682,6 +684,18 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(phase, "cache:stats") == 0) {
         return now_cache_print_stats();
+    }
+
+    if (strcmp(phase, "cache:remote-stats") == 0) {
+        NowRemoteCacheConfig rcfg;
+        if (now_remote_config_load(&rcfg) != 0) {
+            fprintf(stderr, "error: no remote cache configured in ~/.now/config.pasta\n"
+                            "hint: add an object_cache section with url, token, push\n");
+            return 1;
+        }
+        int rc = now_remote_cache_print_stats(&rcfg, verbose);
+        now_remote_config_free(&rcfg);
+        return rc;
     }
 
     if (strcmp(phase, "cache:mirror") == 0) {

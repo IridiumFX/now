@@ -8,6 +8,7 @@
 #include "now_repro.h"
 #include "now_module.h"
 #include "now_cache.h"
+#include "now_remote.h"
 #include "now.h"
 
 #include <stdlib.h>
@@ -1584,6 +1585,11 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
     int skipped = 0;
     int cache_hits = 0;
+    int remote_hits = 0;
+
+    /* Load remote cache config (optional, silent on failure) */
+    NowRemoteCacheConfig remote_cfg;
+    int has_remote = (now_remote_config_load(&remote_cfg) == 0);
 
     for (size_t i = 0; i < ctx->sources.count; i++) {
         const char *src = ctx->sources.paths[i];
@@ -1603,7 +1609,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             continue;
         }
 
-        /* Check content-addressable cache */
+        /* Check content-addressable cache (local, then remote) */
         {
             char *src_full = now_path_join(ctx->basedir, src);
             char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
@@ -1622,8 +1628,25 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                                           ctx->target_dir, ".obj")
                         : now_obj_path(ctx->basedir, src, p->sources.dir,
                                        ctx->target_dir);
+
+                    int restored = 0;
+
+                    /* Try local cache first */
                     if (obj && now_cache_restore_ex(ckey, obj, obj_ext) == 0) {
-                        /* Cache hit — update manifest and skip */
+                        restored = 1;
+                        cache_hits++;
+                    }
+
+                    /* Try remote cache on local miss */
+                    if (!restored && obj && has_remote &&
+                        now_remote_cache_restore(&remote_cfg, ckey, obj, obj_ext) == 0) {
+                        restored = 1;
+                        remote_hits++;
+                        /* Populate local cache for next time */
+                        now_cache_store(ckey, obj, obj_ext);
+                    }
+
+                    if (restored) {
                         struct stat cst;
                         long long mtime = 0;
                         if (src_full && stat(src_full, &cst) == 0)
@@ -1631,7 +1654,6 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                         now_manifest_set(&manifest, src, obj,
                                          src_hash, fhash, mtime);
                         now_filelist_push(&ctx->objects, obj);
-                        cache_hits++;
                         free(obj);
                         free(ckey);
                         free(src_hash);
@@ -1822,6 +1844,10 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                         const char *ext = ctx->toolchain.is_msvc ? ".obj" : ".o";
                         now_cache_store_ex(ckey, job->obj_path, ext,
                                            deps.count > 0 ? &deps : NULL);
+                        /* Push to remote cache */
+                        if (has_remote)
+                            now_remote_cache_store(&remote_cfg, ckey,
+                                                    job->obj_path, ext);
                         free(ckey);
                     }
                 }
@@ -1964,6 +1990,10 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                                 const char *ext = ctx->toolchain.is_msvc ? ".obj" : ".o";
                                 now_cache_store_ex(ckey, job->obj_path, ext,
                                                    deps.count > 0 ? &deps : NULL);
+                                /* Push to remote cache */
+                                if (has_remote)
+                                    now_remote_cache_store(&remote_cfg, ckey,
+                                                            job->obj_path, ext);
                                 free(ckey);
                             }
                         }
@@ -2005,15 +2035,25 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     free(repro_timestamp);
     now_repro_free(&repro);
     now_module_scan_free(&modscan);
+    if (has_remote) now_remote_config_free(&remote_cfg);
 
-    if (ctx->verbose && (compiled > 0 || skipped > 0 || cache_hits > 0)) {
-        if (cache_hits > 0 && compiled > 0 && max_jobs > 1)
-            fprintf(stderr, "  compiled %d (%d-way parallel), cached %d, skipped %d (up to date)\n",
-                    compiled, max_jobs, cache_hits, skipped);
-        else if (cache_hits > 0)
-            fprintf(stderr, "  compiled %d, cached %d, skipped %d (up to date)\n",
-                    compiled, cache_hits, skipped);
-        else if (max_jobs > 1 && compiled > 1)
+    if (ctx->verbose && (compiled > 0 || skipped > 0 || cache_hits > 0 || remote_hits > 0)) {
+        int total_cached = cache_hits + remote_hits;
+        if (total_cached > 0 && compiled > 0 && max_jobs > 1) {
+            if (remote_hits > 0)
+                fprintf(stderr, "  compiled %d (%d-way parallel), cached %d (local %d, remote %d), skipped %d (up to date)\n",
+                        compiled, max_jobs, total_cached, cache_hits, remote_hits, skipped);
+            else
+                fprintf(stderr, "  compiled %d (%d-way parallel), cached %d, skipped %d (up to date)\n",
+                        compiled, max_jobs, total_cached, skipped);
+        } else if (total_cached > 0) {
+            if (remote_hits > 0)
+                fprintf(stderr, "  compiled %d, cached %d (local %d, remote %d), skipped %d (up to date)\n",
+                        compiled, total_cached, cache_hits, remote_hits, skipped);
+            else
+                fprintf(stderr, "  compiled %d, cached %d, skipped %d (up to date)\n",
+                        compiled, total_cached, skipped);
+        } else if (max_jobs > 1 && compiled > 1)
             fprintf(stderr, "  compiled %d (%d-way parallel), skipped %d (up to date)\n",
                     compiled, max_jobs, skipped);
         else

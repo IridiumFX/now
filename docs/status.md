@@ -57,6 +57,7 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external process invocation with stdin/stdout Pasta IPC |
 | `now_plugin_registry.c` | `now_plugin_registry.h` | Plugin registry: manifest parsing, search, install, list, info, binary discovery |
 | `now_sbom.c` | `now_sbom.h` | SBOM generation: CycloneDX 1.5 JSON, lock file integration, purl, dependency graph |
+| `now_remote.c` | `now_remote.h` | Remote object cache: HTTP GET/PUT, config loading, build integration, stats |
 | `now_workspace.c` | `now_workspace.h` | Workspace/module system: DAG construction, Kahn's topo sort, wave build |
 | `now_cache.c` | `now_cache.h` | Content-addressable build cache: SHA-256 key, two-level sharding, header-aware (depfile parsing, ccache-style two-level key) |
 | `main.c` | — | CLI entry point: phase dispatch, option parsing |
@@ -551,7 +552,22 @@ Zero-lock-in escape hatch — generates a standalone `BUILD.bazel` from `now.pas
 - **Dependencies**: listed as comments (cannot auto-resolve across build systems)
 - **5 tests**: basic cc_library, cc_binary, static linkstatic, C++ globs, deps comments
 
-### 25d. SBOM Generation (`now sbom`)
+### 25d. Remote Object Cache (Distributed Build Foundation)
+
+Shared compilation caches across CI machines and developer workstations:
+
+- **Config**: `~/.now/config.pasta` → `object_cache: { url, token, push }` section
+- **Protocol**: `GET /objects/{cache_key}{.o|.obj}` (restore), `PUT /objects/{cache_key}{.o|.obj}` (store)
+- **Build integration**: After local cache miss, checks remote before compiling; on remote hit, populates local cache
+- **Remote push**: After successful compilation, pushes objects to remote cache if `push: true`
+- **Auth**: Optional `Authorization: Bearer {token}` header
+- **Fast timeouts**: 3s connect timeout — remote cache never blocks builds
+- **Silent failures**: Remote errors silently fall back to local-only builds
+- **CLI**: `now cache:remote-stats` shows connectivity, auth status, push config
+- **Verbose output**: `compiled N, cached M (local L, remote R), skipped S` summary
+- **9 tests**: Config parsing (full/minimal/no-section/no-url), free null-safe, restore unreachable, store push-disabled, store unreachable, cache key URL-safety
+
+### 25e. SBOM Generation (`now sbom`)
 
 CycloneDX 1.5 JSON generation for software supply-chain compliance:
 
@@ -661,7 +677,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-265 tests across all modules:
+274 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -686,6 +702,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Workspace | 5 | Detect workspace root, single project not workspace, NULL safe, init modules/graph, topo sort ordering |
 | Plugins | 6 | Built-in detection, POM loading, no-plugins no-op, result lifecycle, unknown builtin error, now:version generation |
 | Plugin Registry | 10 | Manifest parse (full/minimal/missing-id/missing-file), info_free null safe, find_binary missing, list empty, search no-match, install bad registry, manifest roundtrip |
+| Remote Cache | 9 | Config parse (full/minimal/no-section/no-url), free null-safe, restore unreachable, store push-disabled, store unreachable, key URL-safe |
 | SBOM | 8 | Basic JSON, library type, deps in components, license field, file output, null safety, scope mapping, no-deps |
 | CI | 6 | Exit code mapping, env detection, JSON/Pasta/text build format, JSON test format |
 | Dep confusion | 7 | Exact match, dotted child, no false positive, multiple prefixes, NULL-safe, POM load, procure fail |
@@ -703,7 +720,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 265 tests pass (255 in CI — build integration test requires gcc in PATH at runtime).
+All 274 tests pass (264 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -787,6 +804,7 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | E5 | `now export:bazel` | **DONE** | Bazel BUILD generation: cc_binary/cc_library/cc_test, COPTS/LINKOPTS, glob() patterns, linkstatic |
 | E6 | Plugin registry | **DONE** | `now plugin:list/search/install/info`, manifest parsing, external process invocation, 10 tests |
 | E7 | SBOM generation | **DONE** | `now sbom` CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph, 8 tests |
+| E8 | Remote object cache | **DONE** | `GET/PUT /objects/{key}`, config from `~/.now/config.pasta`, build loop integration, `now cache:remote-stats`, 9 tests |
 
 ### Post-v1
 
