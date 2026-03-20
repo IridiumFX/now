@@ -33,6 +33,8 @@ add_library(now
     src/main/c/now_version.c
     src/main/c/now_resolve.c
     src/main/c/pico_http.c
+    src/main/c/pico_transport.c
+    src/main/c/pico_http_apennines.c
     src/main/c/pico_ws.c
     src/main/c/now_procure.c
     src/main/c/now_package.c
@@ -61,7 +63,7 @@ add_library(now
     lib/alforno/src/main/c/alforno_param.c
     lib/alforno/src/main/c/alforno_merge.c
     lib/alforno/src/main/c/alforno_link.c
-    # Apennines (vendored — fwatch, buf, compress)
+    # Apennines (vendored — fwatch, buf, compress, optionally full HTTP stack)
     lib/apennines/src/main/c/fwatch.c
     lib/apennines/src/main/c/buf.c
     lib/apennines/src/main/c/compress.c
@@ -71,6 +73,36 @@ add_library(now
     lib/basta/src/main/c/basta_value.c
     lib/basta/src/main/c/basta_writer.c
 )
+
+# Apennines HTTPS backend (replaces pico_http + mbedTLS with native stack)
+option(PICO_HTTP_APENNINES "Use apennines HTTPS stack instead of pico_http+mbedTLS" OFF)
+if(PICO_HTTP_APENNINES)
+    target_sources(now PRIVATE
+        lib/apennines/src/main/c/tcp.c
+        lib/apennines/src/main/c/tls.c
+        lib/apennines/src/main/c/dns.c
+        lib/apennines/src/main/c/http.c
+        lib/apennines/src/main/c/h2.c
+        lib/apennines/src/main/c/http_client.c
+        lib/apennines/src/main/c/https_client.c
+        lib/apennines/src/main/c/cipher.c
+        lib/apennines/src/main/c/ct.c
+        lib/apennines/src/main/c/ec.c
+        lib/apennines/src/main/c/ecdsa.c
+        lib/apennines/src/main/c/hash.c
+        lib/apennines/src/main/c/rsa.c
+        lib/apennines/src/main/c/secret.c
+        lib/apennines/src/main/c/x509.c
+        lib/apennines/src/main/c/asn1_der.c
+        lib/apennines/src/main/c/base.c
+        lib/apennines/src/main/c/pem.c
+        lib/apennines/src/main/c/entropy.c
+        lib/apennines/src/main/c/bigint.c
+        lib/apennines/src/main/c/pki.c
+        lib/apennines/src/main/c/threadpool.c
+        lib/apennines/src/main/c/addr.c
+    )
+endif()
 
 target_include_directories(now
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/main/h>
@@ -88,7 +120,12 @@ if(WIN32)
     target_link_libraries(now PRIVATE ws2_32)
 endif()
 
-if(PICO_HTTP_TLS AND TARGET mbedtls)
+if(PICO_HTTP_APENNINES)
+    target_compile_definitions(now PRIVATE PICO_HTTP_APENNINES)
+    if(WIN32)
+        target_link_libraries(now PRIVATE bcrypt)
+    endif()
+elseif(PICO_HTTP_TLS AND TARGET mbedtls)
     target_link_libraries(now PRIVATE mbedtls mbedx509 mbedcrypto)
     target_compile_definitions(now PRIVATE PICO_HTTP_TLS)
 endif()
