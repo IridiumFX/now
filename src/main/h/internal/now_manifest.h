@@ -19,7 +19,9 @@ typedef struct {
     long long mtime;      /* source file modification time (seconds since epoch) */
     char **deps;          /* header dependency paths (from compiler depfile) */
     char **dep_hashes;    /* SHA-256 of each dep */
+    long long *dep_mtimes; /* mtime of each dep (fast-path skip) */
     size_t dep_count;
+    size_t dep_mtime_count; /* number of valid entries in dep_mtimes */
 } NowManifestEntry;
 
 /* The full manifest */
@@ -67,5 +69,34 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
 NOW_API int now_manifest_set_deps(NowManifest *m, const char *source,
                                    const char **deps, const char **dep_hashes,
                                    size_t dep_count);
+
+/* ---- Per-build hash memoization cache ----
+ * Avoids re-hashing the same file (e.g. system headers) across source files.
+ * NOT thread-safe — use from the main build loop only. */
+
+typedef struct NowHashMemoEntry {
+    char *path;
+    char *hash;
+    long long mtime;  /* mtime when hash was computed */
+    struct NowHashMemoEntry *next;
+} NowHashMemoEntry;
+
+typedef struct {
+    NowHashMemoEntry **buckets;
+    size_t bucket_count;
+    size_t count;
+} NowHashMemo;
+
+NOW_API void now_hash_memo_init(NowHashMemo *memo, size_t bucket_count);
+NOW_API void now_hash_memo_free(NowHashMemo *memo);
+
+/* Hash a file with memoization. Returns malloc'd hex string (caller frees).
+ * If the file was previously hashed and its mtime hasn't changed, returns
+ * a copy of the cached hash without re-reading the file. */
+NOW_API char *now_sha256_file_memo(const char *path, NowHashMemo *memo);
+
+/* Global memo for use by subsystems (now_cache.c) during a build.
+ * Set by now_build_compile, cleared after. NOT thread-safe. */
+NOW_API extern NowHashMemo *now_hash_memo_global;
 
 #endif /* NOW_MANIFEST_H */

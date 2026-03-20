@@ -345,8 +345,14 @@ NOW_API int now_depfile_parse(const char *depfile_path,
     }
     buf[w] = '\0';
 
-    /* Skip past first ':' (target portion) */
+    /* Skip past target colon separator.
+     * On Windows, paths may start with a drive letter (e.g. C:\...) so
+     * skip a single-letter drive colon and find the real ': ' separator. */
     char *colon = strchr(buf, ':');
+    /* If colon is at position 1 (drive letter like C:), look for next colon */
+    if (colon && (colon - buf) == 1 && ((buf[0] >= 'A' && buf[0] <= 'Z') ||
+                                         (buf[0] >= 'a' && buf[0] <= 'z')))
+        colon = strchr(colon + 1, ':');
     char *pos = colon ? colon + 1 : buf;
 
     /* Normalize source_path for comparison */
@@ -356,23 +362,32 @@ NOW_API int now_depfile_parse(const char *depfile_path,
         if (src_norm) normalize_slashes(src_norm);
     }
 
-    /* Tokenize on whitespace */
+    /* Tokenize on whitespace, respecting backslash-space escapes (GCC depfile format) */
     while (*pos) {
         while (*pos == ' ' || *pos == '\t' || *pos == '\n' || *pos == '\r')
             pos++;
         if (!*pos) break;
 
+        /* Scan token, treating '\ ' as escaped space (part of path) */
         char *start = pos;
-        while (*pos && *pos != ' ' && *pos != '\t' && *pos != '\n' && *pos != '\r')
+        while (*pos && !(*pos == ' ' && (pos == start || *(pos-1) != '\\'))
+               && *pos != '\t' && *pos != '\n' && *pos != '\r')
             pos++;
         size_t tlen = (size_t)(pos - start);
         if (tlen == 0) continue;
 
-        /* Normalize this token for comparison */
+        /* Build token, stripping backslash escapes before spaces */
         char *token = (char *)malloc(tlen + 1);
         if (!token) continue;
-        memcpy(token, start, tlen);
-        token[tlen] = '\0';
+        {
+            size_t ti = 0;
+            for (size_t si = 0; si < tlen; si++) {
+                if (start[si] == '\\' && si + 1 < tlen && start[si+1] == ' ')
+                    continue;  /* skip backslash before space */
+                token[ti++] = start[si];
+            }
+            token[ti] = '\0';
+        }
 
         char *token_norm = strdup(token);
         if (token_norm) normalize_slashes(token_norm);
@@ -396,7 +411,7 @@ NOW_API int now_depfile_parse(const char *depfile_path,
         free(token_norm);
 
         if (!skip)
-            deplist_push(out, token, tlen);
+            deplist_push(out, token, strlen(token));
 
         free(token);
     }
@@ -595,7 +610,7 @@ NOW_API int now_cache_restore_ex(const char *source_key,
 
     int valid = 1;
     for (size_t i = 0; i < dep_count; i++) {
-        cur_hashes[i] = now_sha256_file(dep_paths[i]);
+        cur_hashes[i] = now_sha256_file_memo(dep_paths[i], now_hash_memo_global);
         if (!cur_hashes[i] ||
             strcmp(cur_hashes[i], dep_hashes[i]) != 0) {
             valid = 0;
@@ -659,7 +674,7 @@ NOW_API int now_cache_store_ex(const char *source_key,
 
     for (size_t i = 0; i < n; i++) {
         sorted_paths[i] = strdup(deps->paths[i]);
-        sorted_hashes[i] = now_sha256_file(deps->paths[i]);
+        sorted_hashes[i] = now_sha256_file_memo(deps->paths[i], now_hash_memo_global);
         if (!sorted_paths[i] || !sorted_hashes[i]) {
             /* Cleanup on error — fall back to simple store */
             for (size_t j = 0; j <= i; j++) {

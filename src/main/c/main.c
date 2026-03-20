@@ -25,6 +25,7 @@
 #include "now_layer.h"
 #include "now_export.h"
 #include "now_plugin_registry.h"
+#include "now_auth.h"
 #include "now_remote.h"
 #include "now_sbom.h"
 #include "now_trust.h"
@@ -184,6 +185,9 @@ static void usage(void) {
         "  reproducible:check  Build twice and compare output hashes\n"
         "  advisory:check      Check deps against advisory database\n"
         "  advisory:update     Fetch latest advisory database\n"
+        "  auth:login   Authenticate with registry: auth:login --registry URL [--method token|ldap|oidc]\n"
+        "  auth:status  Show auth status for a registry (or all)\n"
+        "  auth:logout  Clear cached token: auth:logout --registry URL\n"
         "  layers:audit Report advisory lock violations\n"
         "  ci         Build, test, report (CI mode with structured output)\n"
         "  clean      Delete target/ directory\n"
@@ -571,6 +575,87 @@ int main(int argc, char *argv[]) {
         free(gi_path);
 
         printf("\nready — run 'now build' to compile\n");
+        return 0;
+    }
+
+    /* Auth commands (no project file needed) */
+    if (strcmp(phase, "auth:login") == 0) {
+        const char *method_str = NULL;
+        for (int i = 2; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--method") == 0) method_str = argv[++i];
+            else if (strcmp(argv[i], "--registry") == 0) repo_url = argv[++i];
+        }
+        if (!repo_url) {
+            fprintf(stderr, "error: --registry URL is required\n"
+                            "usage: now auth:login --registry URL [--method token|ldap|oidc]\n");
+            return 1;
+        }
+        NowResult result;
+        memset(&result, 0, sizeof(result));
+        char *jwt = NULL;
+
+        if (method_str) {
+            NowAuthMethod m = now_auth_method_parse(method_str);
+            if (m == NOW_AUTH_LDAP) {
+                NowCredentials creds;
+                if (now_auth_load(repo_url, &creds) != 0) {
+                    fprintf(stderr, "error: no credentials for %s in ~/.now/credentials.pasta\n", repo_url);
+                    return 1;
+                }
+                int rc = now_auth_login_ldap(repo_url, creds.username, creds.token,
+                                              &jwt, &result);
+                now_auth_creds_free(&creds);
+                if (rc != 0) { fprintf(stderr, "error: %s\n", result.message); return 1; }
+            } else if (m == NOW_AUTH_OIDC) {
+                NowCredentials creds;
+                if (now_auth_load(repo_url, &creds) == 0 && creds.client_id && creds.token) {
+                    int rc = now_auth_login_oidc_client(repo_url, creds.client_id,
+                                                         creds.token, &jwt, &result);
+                    now_auth_creds_free(&creds);
+                    if (rc != 0) { fprintf(stderr, "error: %s\n", result.message); return 1; }
+                } else {
+                    int rc = now_auth_login_oidc_device(repo_url, &creds, &jwt, &result);
+                    now_auth_creds_free(&creds);
+                    if (rc != 0) { fprintf(stderr, "error: %s\n", result.message); return 1; }
+                }
+            } else {
+                jwt = now_auth_get_token(repo_url, verbose, &result);
+                if (!jwt) { fprintf(stderr, "error: %s\n", result.message); return 1; }
+            }
+        } else {
+            jwt = now_auth_get_token(repo_url, verbose, &result);
+            if (!jwt) { fprintf(stderr, "error: %s\n", result.message); return 1; }
+        }
+
+        /* Cache the token */
+        if (jwt) {
+            now_token_cache_put(repo_url, jwt, 3600);
+            printf("Authenticated with %s\n", repo_url);
+            if (verbose) printf("  Token: %s...\n", jwt);
+            free(jwt);
+        }
+        return 0;
+    }
+
+    if (strcmp(phase, "auth:status") == 0) {
+        const char *reg = NULL;
+        for (int i = 2; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--registry") == 0) reg = argv[++i];
+        }
+        return now_auth_print_status(reg, verbose);
+    }
+
+    if (strcmp(phase, "auth:logout") == 0) {
+        const char *reg = NULL;
+        for (int i = 2; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--registry") == 0) reg = argv[++i];
+        }
+        if (!reg) {
+            fprintf(stderr, "error: --registry URL is required\n"
+                            "usage: now auth:logout --registry URL\n");
+            return 1;
+        }
+        now_auth_logout(reg);
         return 0;
     }
 

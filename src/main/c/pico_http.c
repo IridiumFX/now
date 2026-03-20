@@ -364,19 +364,21 @@ pico_socket_t pico_connect(const char *host, int port,
             if (connect(sock, rp->ai_addr, (int)rp->ai_addrlen) != 0) {
                 int wsa_err = WSAGetLastError();
                 if (wsa_err == WSAEWOULDBLOCK) {
-                    fd_set wset;
+                    fd_set wset, eset;
                     struct timeval tv;
                     tv.tv_sec  = connect_timeout_ms / 1000;
                     tv.tv_usec = (connect_timeout_ms % 1000) * 1000;
                     FD_ZERO(&wset);
+                    FD_ZERO(&eset);
                     FD_SET(sock, &wset);
-                    if (select(0, NULL, &wset, NULL, &tv) > 0) {
+                    FD_SET(sock, &eset);
+                    if (select(0, NULL, &wset, &eset, &tv) > 0) {
                         /* Check if connect succeeded */
                         int optval = 0;
                         int optlen = sizeof(optval);
                         getsockopt(sock, SOL_SOCKET, SO_ERROR,
                                    (char *)&optval, &optlen);
-                        if (optval != 0) {
+                        if (optval != 0 || FD_ISSET(sock, &eset)) {
                             pico_closesocket(sock);
                             sock = PICO_INVALID_SOCKET;
                             continue;

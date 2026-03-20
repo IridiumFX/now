@@ -57,6 +57,7 @@ CI: Linux, macOS (arm64), FreeBSD (vmactions), Windows (MSVC).
 | `now_plugin.c` | `now_plugin.h` | Plugin system: hook dispatch, built-in plugins, external process invocation with stdin/stdout Pasta IPC |
 | `now_plugin_registry.c` | `now_plugin_registry.h` | Plugin registry: manifest parsing, search, install, list, info, binary discovery |
 | `now_sbom.c` | `now_sbom.h` | SBOM generation: CycloneDX 1.5 JSON, lock file integration, purl, dependency graph |
+| `now_auth.c` | `now_auth.h` | Enterprise auth: token/LDAP/OIDC methods, token caching with TTL, registry discovery, device code + client credentials flows |
 | `now_remote.c` | `now_remote.h` | Remote object cache: HTTP GET/PUT, config loading, build integration, stats |
 | `now_workspace.c` | `now_workspace.h` | Workspace/module system: DAG construction, Kahn's topo sort, wave build |
 | `now_cache.c` | `now_cache.h` | Content-addressable build cache: SHA-256 key, two-level sharding, header-aware (depfile parsing, ccache-style two-level key) |
@@ -584,6 +585,21 @@ CycloneDX 1.5 JSON generation for software supply-chain compliance:
 - **SHA-256 hashes**: per-component hashes from lock file entries
 - **8 tests**: basic JSON, library type, deps, license, file output, null safety, scope mapping, no-deps
 
+### 25f. Enterprise Auth (LDAP/SSO/OIDC)
+
+Multi-method authentication for enterprise registry integration:
+
+- **Auth methods**: `token` (default, existing Basic auth exchange), `ldap` (server-side LDAP bind), `oidc` (OAuth2/OIDC flows)
+- **Credential format**: `~/.now/credentials.pasta` extended with `method`, `client_id`, `issuer` fields
+- **LDAP flow**: Client sends `{"subject":"user","token":"pass","method":"ldap"}` to `/auth/token`; registry validates via LDAP bind server-side
+- **OIDC device code flow**: Interactive CLI login — POST `/auth/device` → display user_code/verification_uri → poll `/auth/device/token` until authorized (RFC 8628)
+- **OIDC client credentials flow**: Non-interactive CI/CD — POST `/auth/token` with `grant_type=client_credentials`, `client_id`, `client_secret`
+- **Token caching**: JWTs stored in `~/.now/tokens.pasta` with expiry timestamps, 60-second safety margin, automatic eviction of expired tokens
+- **Registry discovery**: `GET /.well-known/now-registry` → supported auth methods, OIDC endpoints, registry name
+- **Unified API**: `now_auth_get_token()` — check cache → load credentials → discover method → authenticate → cache result
+- **CLI**: `now auth:login --registry URL [--method token|ldap|oidc]`, `now auth:status [--registry URL]`, `now auth:logout --registry URL`
+- **15 tests**: Method parse/name, creds_free null, load no-file/null, cache lifecycle/expired/overwrite, LDAP null/unreachable, OIDC client null/unreachable, discover unreachable defaults to token, discovery_free null, get_token no-creds
+
 ### 26. Reproducible Builds — Guide Step 20
 
 Determinism measures for bit-identical builds across machines and time:
@@ -677,7 +693,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 
 ## Test Suite
 
-274 tests across all modules:
+289 tests across all modules:
 
 | Category | Count | Description |
 |----------|-------|-------------|
@@ -704,6 +720,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Plugin Registry | 10 | Manifest parse (full/minimal/missing-id/missing-file), info_free null safe, find_binary missing, list empty, search no-match, install bad registry, manifest roundtrip |
 | Remote Cache | 9 | Config parse (full/minimal/no-section/no-url), free null-safe, restore unreachable, store push-disabled, store unreachable, key URL-safe |
 | SBOM | 8 | Basic JSON, library type, deps in components, license field, file output, null safety, scope mapping, no-deps |
+| Enterprise Auth | 15 | Method parse/name, creds_free null, load no-file/null, cache lifecycle/expired/overwrite, LDAP null/unreachable, OIDC client null/unreachable, discover unreachable, discovery_free null, get_token no-creds |
 | CI | 6 | Exit code mapping, env detection, JSON/Pasta/text build format, JSON test format |
 | Dep confusion | 7 | Exact match, dotted child, no false positive, multiple prefixes, NULL-safe, POM load, procure fail |
 | Layers | 8 | Stack init, baseline sections, file load, open merge, locked audit, !exclude:, audit format, push project |
@@ -720,7 +737,7 @@ Native RFC 6455 WebSocket implementation sharing the `PicoConn` transport:
 | Build | 1 | Full compile+link of hello project (integration test) |
 | CLI | 2 | Version command, help text |
 
-All 274 tests pass (264 in CI — build integration test requires gcc in PATH at runtime).
+All 289 tests pass (279 in CI — build integration test requires gcc in PATH at runtime).
 
 ---
 
@@ -805,6 +822,7 @@ Steps marked **[Post-v1]** are fully specified but not required for v1.
 | E6 | Plugin registry | **DONE** | `now plugin:list/search/install/info`, manifest parsing, external process invocation, 10 tests |
 | E7 | SBOM generation | **DONE** | `now sbom` CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph, 8 tests |
 | E8 | Remote object cache | **DONE** | `GET/PUT /objects/{key}`, config from `~/.now/config.pasta`, build loop integration, `now cache:remote-stats`, 9 tests |
+| E9 | Enterprise auth (LDAP/SSO) | **DONE** | Token/LDAP/OIDC auth methods, token caching w/ TTL, registry discovery, device code + client credentials flows, `auth:login/status/logout` CLI, 15 tests |
 
 ### Post-v1
 

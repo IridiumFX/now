@@ -77,7 +77,7 @@ adopting a build tool.
 | 3.1 | Maven import/export | DONE — `now export:maven` + `now import:maven`, mini XML parser, roundtrip pom.xml ↔ now.pasta |
 | 3.2 | Distributed/remote build | DONE (Part A) — Remote object cache: `GET/PUT /objects/{key}`, config in `~/.now/config.pasta`, integrated into build loop, `now cache:remote-stats` |
 | 3.3 | SBOM generation | DONE — `now sbom` generates CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph |
-| 3.4 | LDAP/SSO auth for registries | Enterprise identity, Cookbook integration |
+| 3.4 | LDAP/SSO auth for registries | DONE — Token/LDAP/OIDC auth methods, token caching with TTL, registry discovery, device code + client credentials flows, `auth:login/status/logout` CLI |
 | 3.5 | Audit logging | Who published what, when, approved by whom — regulated industries need this |
 
 ---
@@ -108,8 +108,8 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 
 ```
 Tier 1 complete (1.1-1.5). Pasta ecosystem (P.1-P.3, P.5) complete.
-Maven import/export (3.1) done. Java is a first-class language.
-P.4 (Basta packages) done. 2.1 (native Ed25519) done. 2.2 (TLS hardening) done. 2.3 (build caching) done. 2.4 (export:meson/bazel) done. 2.5 (plugin registry) done. Tier 2 complete. Next: Tier 3.
+Tier 2 complete (2.1-2.5). Tier 3 in progress: 3.1-3.4 done. Next: 3.5 (audit logging).
 ```
 
 Self-hosting is done. Java + Maven interop bridges the enterprise world.
+Enterprise auth (LDAP/SSO/OIDC) enables corporate registry integration.

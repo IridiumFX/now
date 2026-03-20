@@ -997,6 +997,7 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
 
 /* Build a hash of the compile flags for a given source file.
  * Used for incremental rebuild detection. */
+static char *link_flags_hash(const NowProject *p);
 static char *compile_flags_hash(const NowProject *p) {
     /* Concatenate all flags that affect compilation */
     size_t cap = 256;
@@ -1563,6 +1564,11 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     char *manifest_path = now_path_join(ctx->basedir, "target/.now-manifest");
     now_manifest_load(&manifest, manifest_path);
 
+    /* Hash memoization cache — avoids re-hashing same headers across source files */
+    NowHashMemo hash_memo;
+    now_hash_memo_init(&hash_memo, 1024);
+    now_hash_memo_global = &hash_memo;
+
     /* Compute flags hash once for all sources */
     char *fhash = compile_flags_hash(p);
 
@@ -1590,6 +1596,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     /* Load remote cache config (optional, silent on failure) */
     NowRemoteCacheConfig remote_cfg;
     int has_remote = (now_remote_config_load(&remote_cfg) == 0);
+    if (has_remote) now_remote_reset();  /* clear circuit breaker from prior build */
 
     for (size_t i = 0; i < ctx->sources.count; i++) {
         const char *src = ctx->sources.paths[i];
@@ -1612,7 +1619,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         /* Check content-addressable cache (local, then remote) */
         {
             char *src_full = now_path_join(ctx->basedir, src);
-            char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
+            char *src_hash = src_full ? now_sha256_file_memo(src_full, &hash_memo) : NULL;
             if (src_hash) {
                 /* Pick compiler based on language */
                 const char *compiler = ctx->toolchain.cc;
@@ -1813,7 +1820,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     now_depfile_parse(job->dep_path, src_full, &deps);
 
                 /* Update manifest */
-                char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
+                char *src_hash = src_full ? now_sha256_file_memo(src_full, &hash_memo) : NULL;
                 struct stat st;
                 long long mtime = 0;
                 if (src_full && stat(src_full, &st) == 0)
@@ -1826,7 +1833,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     char **dhashes = (char **)calloc(deps.count, sizeof(char *));
                     if (dhashes) {
                         for (size_t d = 0; d < deps.count; d++)
-                            dhashes[d] = now_sha256_file(deps.paths[d]);
+                            dhashes[d] = now_sha256_file_memo(deps.paths[d], &hash_memo);
                         now_manifest_set_deps(&manifest, job->src_rel,
                             (const char **)deps.paths,
                             (const char **)dhashes, deps.count);
@@ -1959,7 +1966,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                             now_depfile_parse(job->dep_path, src_full, &deps);
 
                         /* Update manifest */
-                        char *src_hash = src_full ? now_sha256_file(src_full) : NULL;
+                        char *src_hash = src_full ? now_sha256_file_memo(src_full, &hash_memo) : NULL;
                         struct stat st;
                         long long mtime = 0;
                         if (src_full && stat(src_full, &st) == 0)
@@ -1972,7 +1979,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                             char **dhashes = (char **)calloc(deps.count, sizeof(char *));
                             if (dhashes) {
                                 for (size_t d = 0; d < deps.count; d++)
-                                    dhashes[d] = now_sha256_file(deps.paths[d]);
+                                    dhashes[d] = now_sha256_file_memo(deps.paths[d], &hash_memo);
                                 now_manifest_set_deps(&manifest, job->src_rel,
                                     (const char **)deps.paths,
                                     (const char **)dhashes, deps.count);
@@ -2024,13 +2031,21 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         compile_job_free(&jobs[j]);
     free(jobs);
 
-    /* Save manifest */
-    if (manifest_path)
+    /* Save manifest (include link flags hash for link-skip optimization) */
+    if (manifest_path) {
+        char *lfh = link_flags_hash(ctx->project);
+        if (lfh) {
+            free(manifest.link_flags_hash);
+            manifest.link_flags_hash = lfh;
+        }
         now_manifest_save(&manifest, manifest_path);
+    }
 
     free(fhash);
     free(manifest_path);
     now_manifest_free(&manifest);
+    now_hash_memo_global = NULL;
+    now_hash_memo_free(&hash_memo);
     now_repro_free_flags(repro_flags, repro_flag_count);
     free(repro_timestamp);
     now_repro_free(&repro);
@@ -2162,6 +2177,42 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 #endif
     }
     free(bin_dir);
+
+    /* Skip link if output exists and is newer than all objects + link flags unchanged */
+    {
+        struct stat out_st;
+        if (stat(out_file, &out_st) == 0) {
+            long long out_mtime = (long long)out_st.st_mtime;
+            int up_to_date = 1;
+            for (size_t i = 0; i < ctx->objects.count; i++) {
+                struct stat obj_st;
+                if (stat(ctx->objects.paths[i], &obj_st) != 0 ||
+                    (long long)obj_st.st_mtime > out_mtime) {
+                    up_to_date = 0;
+                    break;
+                }
+            }
+            if (up_to_date) {
+                /* Also check link flags hash */
+                char *manifest_path = now_path_join(basedir, "target/.now-manifest");
+                NowManifest manifest;
+                now_manifest_load(&manifest, manifest_path);
+                free(manifest_path);
+                char *cur_lfh = link_flags_hash(p);
+                if (cur_lfh && manifest.link_flags_hash &&
+                    strcmp(cur_lfh, manifest.link_flags_hash) == 0) {
+                    free(cur_lfh);
+                    now_manifest_free(&manifest);
+                    if (ctx->verbose)
+                        fprintf(stderr, "  link: up to date\n");
+                    if (result) { result->code = NOW_OK; result->message[0] = '\0'; }
+                    return 0;
+                }
+                free(cur_lfh);
+                now_manifest_free(&manifest);
+            }
+        }
+    }
 
     if (ctx->toolchain.is_msvc) {
         /* ---- MSVC link path ---- */

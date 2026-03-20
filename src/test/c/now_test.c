@@ -495,6 +495,193 @@ static void test_remote_cache_key_url_safe(void) {
     PASS();
 }
 
+/* ---- Enterprise auth (LDAP/SSO) ---- */
+
+static void test_auth_method_parse(void) {
+    TEST("auth: method parse");
+    ASSERT_EQ((int)now_auth_method_parse("token"), (int)NOW_AUTH_TOKEN);
+    ASSERT_EQ((int)now_auth_method_parse("ldap"), (int)NOW_AUTH_LDAP);
+    ASSERT_EQ((int)now_auth_method_parse("oidc"), (int)NOW_AUTH_OIDC);
+    ASSERT_EQ((int)now_auth_method_parse("oauth2"), (int)NOW_AUTH_OIDC);
+    ASSERT_EQ((int)now_auth_method_parse(NULL), (int)NOW_AUTH_TOKEN);
+    ASSERT_EQ((int)now_auth_method_parse("unknown"), (int)NOW_AUTH_TOKEN);
+    PASS();
+}
+
+static void test_auth_method_name(void) {
+    TEST("auth: method name");
+    ASSERT_STR(now_auth_method_name(NOW_AUTH_TOKEN), "token");
+    ASSERT_STR(now_auth_method_name(NOW_AUTH_LDAP), "ldap");
+    ASSERT_STR(now_auth_method_name(NOW_AUTH_OIDC), "oidc");
+    PASS();
+}
+
+static void test_auth_creds_free_null(void) {
+    TEST("auth: creds_free null safety");
+    now_auth_creds_free(NULL);  /* should not crash */
+    NowCredentials c;
+    memset(&c, 0, sizeof(c));
+    now_auth_creds_free(&c);   /* should not crash on zeroed struct */
+    PASS();
+}
+
+static void test_auth_load_no_file(void) {
+    TEST("auth: load returns -1 with no credentials file");
+    NowCredentials c;
+    /* Use a URL that won't match anything */
+    int rc = now_auth_load("http://nonexistent.example.com:9999", &c);
+    /* Either -1 (no file) or -1 (no match) */
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_auth_load_null_safety(void) {
+    TEST("auth: load null safety");
+    ASSERT_EQ(now_auth_load(NULL, NULL), -1);
+    NowCredentials c;
+    ASSERT_EQ(now_auth_load(NULL, &c), -1);
+    ASSERT_EQ(now_auth_load("http://x", NULL), -1);
+    PASS();
+}
+
+static void test_token_cache_lifecycle(void) {
+    TEST("auth: token cache put/get/remove");
+    const char *url = "http://test-cache-lifecycle.example.com:12345";
+
+    /* Put a token */
+    int rc = now_token_cache_put(url, "test-jwt-abc123", 3600);
+    ASSERT_EQ(rc, 0);
+
+    /* Get it back */
+    char *jwt = now_token_cache_get(url);
+    ASSERT_NOT_NULL(jwt);
+    ASSERT_STR(jwt, "test-jwt-abc123");
+    free(jwt);
+
+    /* Remove it */
+    rc = now_token_cache_remove(url);
+    ASSERT_EQ(rc, 0);
+
+    /* Should be gone */
+    jwt = now_token_cache_get(url);
+    if (jwt) { free(jwt); FAIL("token should have been removed"); return; }
+
+    /* Remove again — should return -1 */
+    rc = now_token_cache_remove(url);
+    ASSERT_EQ(rc, -1);
+    PASS();
+}
+
+static void test_token_cache_expired(void) {
+    TEST("auth: token cache returns NULL for expired token");
+    const char *url = "http://test-cache-expired.example.com:12345";
+
+    /* Put with 0 seconds TTL (already expired) */
+    int rc = now_token_cache_put(url, "expired-jwt", 0);
+    ASSERT_EQ(rc, 0);
+
+    /* Should return NULL (expired within 60s margin) */
+    char *jwt = now_token_cache_get(url);
+    if (jwt) { free(jwt); now_token_cache_remove(url); FAIL("expired token should be NULL"); return; }
+
+    /* Cleanup */
+    now_token_cache_remove(url);
+    PASS();
+}
+
+static void test_token_cache_overwrite(void) {
+    TEST("auth: token cache overwrites existing entry");
+    const char *url = "http://test-cache-overwrite.example.com:12345";
+
+    now_token_cache_put(url, "jwt-v1", 3600);
+    now_token_cache_put(url, "jwt-v2", 3600);
+
+    char *jwt = now_token_cache_get(url);
+    ASSERT_NOT_NULL(jwt);
+    ASSERT_STR(jwt, "jwt-v2");
+    free(jwt);
+
+    now_token_cache_remove(url);
+    PASS();
+}
+
+static void test_auth_ldap_login_null(void) {
+    TEST("auth: ldap login null safety");
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    char *jwt = NULL;
+    ASSERT_EQ(now_auth_login_ldap(NULL, "user", "pass", &jwt, &res), -1);
+    ASSERT_EQ(now_auth_login_ldap("http://x", NULL, "pass", &jwt, &res), -1);
+    ASSERT_EQ(now_auth_login_ldap("http://x", "user", NULL, &jwt, &res), -1);
+    ASSERT_EQ(now_auth_login_ldap("http://x", "user", "pass", NULL, &res), -1);
+    PASS();
+}
+
+static void test_auth_ldap_login_unreachable(void) {
+    TEST("auth: ldap login to unreachable host returns error");
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    char *jwt = NULL;
+    int rc = now_auth_login_ldap("http://127.0.0.1:1", "user", "pass",
+                                  &jwt, &res);
+    ASSERT_EQ(rc, -1);
+    if (jwt) { free(jwt); FAIL("should not get JWT from unreachable host"); return; }
+    PASS();
+}
+
+static void test_auth_oidc_client_null(void) {
+    TEST("auth: oidc client credentials null safety");
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    char *jwt = NULL;
+    ASSERT_EQ(now_auth_login_oidc_client(NULL, "cid", "cs", &jwt, &res), -1);
+    ASSERT_EQ(now_auth_login_oidc_client("http://x", NULL, "cs", &jwt, &res), -1);
+    ASSERT_EQ(now_auth_login_oidc_client("http://x", "cid", NULL, &jwt, &res), -1);
+    PASS();
+}
+
+static void test_auth_oidc_client_unreachable(void) {
+    TEST("auth: oidc client creds to unreachable host returns error");
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    char *jwt = NULL;
+    int rc = now_auth_login_oidc_client("http://127.0.0.1:1",
+                                          "client-id", "client-secret",
+                                          &jwt, &res);
+    ASSERT_EQ(rc, -1);
+    if (jwt) { free(jwt); FAIL("should not get JWT"); return; }
+    PASS();
+}
+
+static void test_auth_discover_unreachable(void) {
+    TEST("auth: discover unreachable registry defaults to token");
+    NowRegistryInfo info;
+    int rc = now_auth_discover("http://127.0.0.1:1", &info);
+    ASSERT_EQ(rc, -1);
+    /* Should default to token auth */
+    ASSERT_EQ(info.supports_token, 1);
+    now_auth_discovery_free(&info);
+    PASS();
+}
+
+static void test_auth_discovery_free_null(void) {
+    TEST("auth: discovery_free null safety");
+    now_auth_discovery_free(NULL);  /* should not crash */
+    NowRegistryInfo info;
+    memset(&info, 0, sizeof(info));
+    now_auth_discovery_free(&info); /* should not crash */
+    PASS();
+}
+
+static void test_auth_get_token_no_creds(void) {
+    TEST("auth: get_token returns NULL with no credentials");
+    NowResult res;
+    memset(&res, 0, sizeof(res));
+    char *jwt = now_auth_get_token("http://nonexistent.example.com:9999", 0, &res);
+    if (jwt) { free(jwt); FAIL("should not get token without credentials"); return; }
+    PASS();
+}
+
 /* ---- SBOM generation ---- */
 
 static void test_sbom_to_json_basic(void) {
@@ -5883,6 +6070,23 @@ int main(void) {
     test_remote_cache_store_push_disabled();
     test_remote_cache_store_unreachable();
     test_remote_cache_key_url_safe();
+
+    printf("\n  Enterprise auth (LDAP/SSO):\n");
+    test_auth_method_parse();
+    test_auth_method_name();
+    test_auth_creds_free_null();
+    test_auth_load_no_file();
+    test_auth_load_null_safety();
+    test_token_cache_lifecycle();
+    test_token_cache_expired();
+    test_token_cache_overwrite();
+    test_auth_ldap_login_null();
+    test_auth_ldap_login_unreachable();
+    test_auth_oidc_client_null();
+    test_auth_oidc_client_unreachable();
+    test_auth_discover_unreachable();
+    test_auth_discovery_free_null();
+    test_auth_get_token_no_creds();
 
     printf("\n  SBOM generation:\n");
     test_sbom_to_json_basic();

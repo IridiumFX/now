@@ -30,6 +30,9 @@ NOW_API int now_remote_config_parse(const char *pasta_str, size_t len,
 /* Free config fields. Safe to call on zeroed struct. */
 NOW_API void now_remote_config_free(NowRemoteCacheConfig *cfg);
 
+/* Reset the circuit breaker. Call at start of each build. */
+NOW_API void now_remote_reset(void);
+
 /* Try to restore an object from the remote cache.
  * GET {url}/objects/{cache_key}{obj_ext}
  * On 200, writes body to dst_path and returns 0.

@@ -173,6 +173,7 @@ NOW_API void now_manifest_free(NowManifest *m) {
         }
         free(m->entries[i].deps);
         free(m->entries[i].dep_hashes);
+        free(m->entries[i].dep_mtimes);
     }
     free(m->entries);
     free(m->link_flags_hash);
@@ -249,27 +250,35 @@ NOW_API int now_manifest_set_deps(NowManifest *m, const char *source,
     }
     free(e->deps);
     free(e->dep_hashes);
+    free(e->dep_mtimes);
     e->deps = NULL;
     e->dep_hashes = NULL;
+    e->dep_mtimes = NULL;
     e->dep_count = 0;
+    e->dep_mtime_count = 0;
 
     if (dep_count == 0 || !deps || !dep_hashes) return 0;
 
     e->deps = (char **)malloc(dep_count * sizeof(char *));
     e->dep_hashes = (char **)malloc(dep_count * sizeof(char *));
-    if (!e->deps || !e->dep_hashes) {
+    e->dep_mtimes = (long long *)malloc(dep_count * sizeof(long long));
+    if (!e->deps || !e->dep_hashes || !e->dep_mtimes) {
         free(e->deps);
         free(e->dep_hashes);
+        free(e->dep_mtimes);
         e->deps = NULL;
         e->dep_hashes = NULL;
+        e->dep_mtimes = NULL;
         return -1;
     }
 
     for (size_t i = 0; i < dep_count; i++) {
         e->deps[i] = strdup(deps[i]);
         e->dep_hashes[i] = strdup(dep_hashes[i]);
+        e->dep_mtimes[i] = 0; /* populated by save/load cycle, not by set_deps */
     }
     e->dep_count = dep_count;
+    e->dep_mtime_count = 0; /* no valid mtimes until loaded from manifest */
     return 0;
 }
 
@@ -310,12 +319,20 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
     if (entry->object && !now_path_exists(entry->object))
         return 1;
 
-    /* Check header dependencies */
+    /* Check header dependencies — mtime fast path, then hash */
     for (size_t d = 0; d < entry->dep_count; d++) {
         if (!entry->deps[d] || !entry->dep_hashes[d])
             return 1;
+        struct stat dst;
+        if (stat(entry->deps[d], &dst) != 0)
+            return 1;  /* dep deleted or unreadable */
+        /* Fast path: if dep has mtime stored and it matches, skip hash */
+        if (d < entry->dep_mtime_count && entry->dep_mtimes &&
+            (long long)dst.st_mtime == entry->dep_mtimes[d])
+            continue;
+        /* mtime differs or not tracked — hash to confirm */
         char *dh = now_sha256_file(entry->deps[d]);
-        if (!dh) return 1;  /* dep deleted or unreadable */
+        if (!dh) return 1;
         int changed = strcmp(dh, entry->dep_hashes[d]) != 0;
         free(dh);
         if (changed) return 1;
@@ -403,10 +420,34 @@ NOW_API int now_manifest_load(NowManifest *m, const char *path) {
                                     actual++;
                                 }
                             }
-                            if (actual > 0)
+                            if (actual > 0) {
                                 now_manifest_set_deps(m, src,
                                     (const char **)dpaths,
                                     (const char **)dhashes, actual);
+                                /* Overwrite dep_mtimes with stored values (not re-stat) */
+                                NowManifestEntry *me = NULL;
+                                for (size_t mi = 0; mi < m->count; mi++) {
+                                    if (strcmp(m->entries[mi].source, src) == 0) {
+                                        me = &m->entries[mi];
+                                        break;
+                                    }
+                                }
+                                if (me && me->dep_mtimes) {
+                                    size_t di2 = 0;
+                                    for (size_t d = 0; d < dc && di2 < actual; d++) {
+                                        const PastaValue *de = pasta_array_get(darr, d);
+                                        if (!de || pasta_type(de) != PASTA_MAP) continue;
+                                        const PastaValue *dp = pasta_map_get(de, "path");
+                                        const PastaValue *dh = pasta_map_get(de, "hash");
+                                        if (!dp || !dh) continue;
+                                        const PastaValue *dm = pasta_map_get(de, "mtime");
+                                        if (dm && pasta_type(dm) == PASTA_NUMBER)
+                                            me->dep_mtimes[di2] = (long long)pasta_get_number(dm);
+                                        di2++;
+                                    }
+                                    me->dep_mtime_count = actual;
+                                }
+                            }
                             for (size_t d = 0; d < actual; d++) {
                                 free(dpaths[d]);
                                 free(dhashes[d]);
@@ -449,6 +490,12 @@ NOW_API int now_manifest_save(const NowManifest *m, const char *path) {
                 PastaValue *dep = pasta_new_map();
                 pasta_set(dep, "path", pasta_new_string(e->deps[d]));
                 pasta_set(dep, "hash", pasta_new_string(e->dep_hashes[d]));
+                /* Always stat dep at save time to get current mtime */
+                {
+                    struct stat dep_st;
+                    if (stat(e->deps[d], &dep_st) == 0)
+                        pasta_set(dep, "mtime", pasta_new_number((double)(long long)dep_st.st_mtime));
+                }
                 pasta_push(dep_arr, dep);
             }
             pasta_set(entry, "deps", dep_arr);
@@ -470,4 +517,85 @@ NOW_API int now_manifest_save(const NowManifest *m, const char *path) {
     free(out);
 
     return 0;
+}
+
+/* ---- Per-build hash memoization cache ---- */
+
+NOW_API NowHashMemo *now_hash_memo_global = NULL;
+
+static unsigned int memo_hash(const char *s) {
+    unsigned int h = 5381;
+    while (*s) h = h * 33 + (unsigned char)*s++;
+    return h;
+}
+
+NOW_API void now_hash_memo_init(NowHashMemo *memo, size_t bucket_count) {
+    if (!memo) return;
+    if (bucket_count == 0) bucket_count = 512;
+    memo->buckets = (NowHashMemoEntry **)calloc(bucket_count, sizeof(NowHashMemoEntry *));
+    memo->bucket_count = bucket_count;
+    memo->count = 0;
+}
+
+NOW_API void now_hash_memo_free(NowHashMemo *memo) {
+    if (!memo || !memo->buckets) return;
+    for (size_t i = 0; i < memo->bucket_count; i++) {
+        NowHashMemoEntry *e = memo->buckets[i];
+        while (e) {
+            NowHashMemoEntry *next = e->next;
+            free(e->path);
+            free(e->hash);
+            free(e);
+            e = next;
+        }
+    }
+    free(memo->buckets);
+    memo->buckets = NULL;
+    memo->bucket_count = 0;
+    memo->count = 0;
+}
+
+NOW_API char *now_sha256_file_memo(const char *path, NowHashMemo *memo) {
+    if (!path) return NULL;
+
+    /* No memo → fall back to direct hash */
+    if (!memo || !memo->buckets)
+        return now_sha256_file(path);
+
+    /* Stat the file for mtime */
+    struct stat st;
+    if (stat(path, &st) != 0) return NULL;
+    long long cur_mtime = (long long)st.st_mtime;
+
+    /* Look up in memo */
+    unsigned int idx = memo_hash(path) % memo->bucket_count;
+    for (NowHashMemoEntry *e = memo->buckets[idx]; e; e = e->next) {
+        if (strcmp(e->path, path) == 0) {
+            if (e->mtime == cur_mtime && e->hash)
+                return strdup(e->hash);  /* cache hit */
+            /* mtime changed — rehash and update */
+            char *h = now_sha256_file(path);
+            if (h) {
+                free(e->hash);
+                e->hash = strdup(h);
+                e->mtime = cur_mtime;
+            }
+            return h;
+        }
+    }
+
+    /* Cache miss — hash and insert */
+    char *h = now_sha256_file(path);
+    if (!h) return NULL;
+
+    NowHashMemoEntry *ne = (NowHashMemoEntry *)malloc(sizeof(NowHashMemoEntry));
+    if (ne) {
+        ne->path = strdup(path);
+        ne->hash = strdup(h);
+        ne->mtime = cur_mtime;
+        ne->next = memo->buckets[idx];
+        memo->buckets[idx] = ne;
+        memo->count++;
+    }
+    return h;
 }

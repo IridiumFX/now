@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---- File helpers ---- */
 
@@ -165,6 +166,14 @@ static char *build_url(const char *base_url, const char *cache_key,
     return url;
 }
 
+/* ---- Circuit breaker ----
+ * After one connection failure OR slow response (>1s), skip all subsequent
+ * remote ops for this build. Avoids timeout penalties when server is
+ * unreachable or experiencing high latency (e.g. IPv6 fallback). */
+static int remote_tripped = 0;
+
+NOW_API void now_remote_reset(void) { remote_tripped = 0; }
+
 /* ---- Remote cache operations ---- */
 
 NOW_API int now_remote_cache_restore(const NowRemoteCacheConfig *cfg,
@@ -172,6 +181,7 @@ NOW_API int now_remote_cache_restore(const NowRemoteCacheConfig *cfg,
                                       const char *dst_path,
                                       const char *obj_ext) {
     if (!cfg || !cfg->url || !cache_key || !dst_path) return -1;
+    if (remote_tripped) return -1;
 
     char *url = build_url(cfg->url, cache_key, obj_ext);
     if (!url) return -1;
@@ -184,10 +194,22 @@ NOW_API int now_remote_cache_restore(const NowRemoteCacheConfig *cfg,
 
     PicoHttpResponse res;
     memset(&res, 0, sizeof(res));
+    clock_t t0 = clock();
     int rc = pico_http_request("GET", url, NULL, NULL, 0, &opts, &res);
+    double elapsed = (double)(clock() - t0) / CLOCKS_PER_SEC;
     free(url);
 
-    if (rc != PICO_OK || res.status != 200 || !res.body || res.body_len == 0) {
+    if (rc != PICO_OK) {
+        /* Connection failed — trip circuit breaker */
+        remote_tripped = 1;
+        pico_http_response_free(&res);
+        return -1;
+    }
+    if (elapsed > 1.0) {
+        /* Slow response — trip circuit breaker (likely IPv6 fallback or WAN) */
+        remote_tripped = 1;
+    }
+    if (res.status != 200 || !res.body || res.body_len == 0) {
         pico_http_response_free(&res);
         return -1;
     }
@@ -211,6 +233,7 @@ NOW_API int now_remote_cache_store(const NowRemoteCacheConfig *cfg,
                                     const char *obj_path,
                                     const char *obj_ext) {
     if (!cfg || !cfg->push || !cfg->url || !cache_key || !obj_path) return -1;
+    if (remote_tripped) return -1;
 
     /* Read the object file into memory */
     size_t file_len;
@@ -233,7 +256,12 @@ NOW_API int now_remote_cache_store(const NowRemoteCacheConfig *cfg,
     free(url);
     free(file_data);
 
-    int ok = (rc == PICO_OK && (res.status == 200 || res.status == 201));
+    if (rc != PICO_OK) {
+        remote_tripped = 1;
+        pico_http_response_free(&res);
+        return -1;
+    }
+    int ok = (res.status == 200 || res.status == 201);
     pico_http_response_free(&res);
     return ok ? 0 : -1;
 }
