@@ -37,6 +37,7 @@
 #include "now_remote.h"
 #include "now_audit.h"
 #include "now_watch.h"
+#include "now_graph.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -989,6 +990,94 @@ static void test_audit_record_and_show(void) {
 
     remove(tmp_log);
     remove(tmp_cfg);
+    PASS();
+}
+
+/* ---- Graph cache ---- */
+
+static void test_graph_key_deterministic(void) {
+    TEST("graph: key is deterministic");
+    char *k1 = now_graph_key(NULL, "/usr/bin/gcc", "abc123");
+    char *k2 = now_graph_key(NULL, "/usr/bin/gcc", "abc123");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (strcmp(k1, k2) != 0) { FAIL("keys should match"); free(k1); free(k2); return; }
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_graph_key_varies(void) {
+    TEST("graph: different inputs produce different keys");
+    char *k1 = now_graph_key(NULL, "/usr/bin/gcc", "abc123");
+    char *k2 = now_graph_key(NULL, "/usr/bin/clang", "abc123");
+    ASSERT_NOT_NULL(k1);
+    ASSERT_NOT_NULL(k2);
+    if (strcmp(k1, k2) == 0) { FAIL("keys should differ"); free(k1); free(k2); return; }
+    free(k1);
+    free(k2);
+    PASS();
+}
+
+static void test_graph_serialize_roundtrip(void) {
+    TEST("graph: serialize/deserialize roundtrip");
+    NowManifest m;
+    now_manifest_init(&m);
+    now_manifest_set(&m, "src/main.c", "target/main.o", "hash1", "fhash1", 1000);
+    now_manifest_set(&m, "src/util.c", "target/util.o", "hash2", "fhash2", 2000);
+
+    const char *deps[] = { "/usr/include/stdio.h" };
+    const char *dhashes[] = { "dephash1" };
+    now_manifest_set_deps(&m, "src/main.c", deps, dhashes, 1);
+
+    size_t len = 0;
+    char *data = now_graph_serialize(&m, &len);
+    ASSERT_NOT_NULL(data);
+    if (len == 0) { FAIL("empty output"); free(data); now_manifest_free(&m); return; }
+
+    /* Verify it's valid pasta with type marker */
+    if (!strstr(data, "now-build-graph")) { FAIL("missing type marker"); free(data); now_manifest_free(&m); return; }
+
+    /* Deserialize back */
+    NowManifest m2;
+    ASSERT_EQ(now_graph_deserialize(data, len, &m2), 0);
+    free(data);
+
+    /* Verify entries survived */
+    const NowManifestEntry *e1 = now_manifest_find(&m2, "src/main.c");
+    const NowManifestEntry *e2 = now_manifest_find(&m2, "src/util.c");
+    ASSERT_NOT_NULL(e1);
+    ASSERT_NOT_NULL(e2);
+    ASSERT_STR(e1->source_hash, "hash1");
+    ASSERT_STR(e2->source_hash, "hash2");
+
+    /* Verify deps */
+    ASSERT_EQ((int)e1->dep_count, 1);
+    ASSERT_STR(e1->dep_hashes[0], "dephash1");
+
+    now_manifest_free(&m);
+    now_manifest_free(&m2);
+    PASS();
+}
+
+static void test_graph_deserialize_bad_input(void) {
+    TEST("graph: deserialize rejects bad input");
+    NowManifest m;
+    ASSERT_EQ(now_graph_deserialize(NULL, 0, &m), -1);
+    ASSERT_EQ(now_graph_deserialize("not pasta", 9, &m), -1);
+    /* Valid pasta but wrong type */
+    const char *wrong = "{ type: \"wrong\" }";
+    ASSERT_EQ(now_graph_deserialize(wrong, strlen(wrong), &m), -1);
+    PASS();
+}
+
+static void test_graph_pull_unreachable(void) {
+    TEST("graph: pull from unreachable host returns -1");
+    NowRemoteCacheConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.url = "http://192.0.2.1:9999";  /* TEST-NET, unreachable */
+    NowManifest m;
+    ASSERT_EQ(now_graph_pull(&cfg, "testkey", &m), -1);
     PASS();
 }
 
@@ -6279,6 +6368,13 @@ int main(void) {
     test_sbom_null_project();
     test_sbom_scope_mapping();
     test_sbom_no_deps();
+
+    printf("\n  Graph cache:\n");
+    test_graph_key_deterministic();
+    test_graph_key_varies();
+    test_graph_serialize_roundtrip();
+    test_graph_deserialize_bad_input();
+    test_graph_pull_unreachable();
 
     printf("\n  Watch:\n");
     test_watch_opts_init();

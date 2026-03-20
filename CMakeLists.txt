@@ -55,6 +55,7 @@ add_library(now
     src/main/c/now_remote.c
     src/main/c/now_audit.c
     src/main/c/now_watch.c
+    src/main/c/now_graph.c
     # Alforno (vendored sources — avoids FetchContent conflict with pasta)
     lib/alforno/src/main/c/alforno.c
     lib/alforno/src/main/c/alforno_param.c
