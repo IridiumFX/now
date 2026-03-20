@@ -33,6 +33,7 @@
 #include "now_advisory.h"
 #include "now_cache.h"
 #include "now_audit.h"
+#include "now_watch.h"
 #include "pasta.h"
 #include "alforno.h"
 
@@ -191,6 +192,7 @@ static void usage(void) {
         "  auth:status  Show auth status for a registry (or all)\n"
         "  auth:logout  Clear cached token: auth:logout --registry URL\n"
         "  layers:audit Report advisory lock violations\n"
+        "  watch      Watch sources and rebuild on changes (Ctrl+C to stop)\n"
         "  ci         Build, test, report (CI mode with structured output)\n"
         "  clean      Delete target/ directory\n"
         "  version    Print version and exit\n\n"
@@ -1289,6 +1291,32 @@ int main(int argc, char *argv[]) {
         rc = (audit.count > 0) ? 1 : 0;
         now_audit_free(&audit);
         now_layer_stack_free(&stack);
+
+    } else if (strcmp(phase, "watch") == 0) {
+        NowWatchOpts wopts;
+        now_watch_opts_init(&wopts);
+        wopts.verbose = verbose;
+        wopts.jobs = jobs;
+        for (int i = 2; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--poll") == 0) wopts.poll_ms = atoi(argv[++i]);
+        }
+        for (;;) {
+            rc = now_watch(project, cwd, &wopts, &result);
+            if (rc == NOW_ERR_SCHEMA) {
+                fprintf(stderr, "[watch] reloading project...\n");
+                now_project_free(project);
+                char *desc = now_path_join(cwd, "now.pasta");
+                project = desc ? now_project_load(desc, &result) : NULL;
+                free(desc);
+                if (!project) {
+                    fprintf(stderr, "error: %s\n", result.message);
+                    rc = 1;
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
 
     } else if (strcmp(phase, "ci") == 0) {
         /* CI lifecycle: build → test with structured output and report */

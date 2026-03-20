@@ -36,6 +36,7 @@
 #include "now_sbom.h"
 #include "now_remote.h"
 #include "now_audit.h"
+#include "now_watch.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -988,6 +989,81 @@ static void test_audit_record_and_show(void) {
 
     remove(tmp_log);
     remove(tmp_cfg);
+    PASS();
+}
+
+/* ---- Watch ---- */
+
+static void test_watch_opts_init(void) {
+    TEST("watch: opts init defaults");
+    NowWatchOpts opts;
+    now_watch_opts_init(&opts);
+    ASSERT_EQ(opts.poll_ms, 500);
+    ASSERT_EQ(opts.verbose, 0);
+    ASSERT_EQ(opts.jobs, 0);
+    PASS();
+}
+
+static void test_watch_snapshot_hello(void) {
+    TEST("watch: snapshot discovers hello project files");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/hello/now.pasta", NOW_TEST_RESOURCES);
+
+    NowResult result;
+    memset(&result, 0, sizeof(result));
+    NowProject *p = now_project_load(path, &result);
+    ASSERT_NOT_NULL(p);
+
+    char basedir[512];
+    snprintf(basedir, sizeof(basedir), "%s/hello", NOW_TEST_RESOURCES);
+
+    NowWatchSnapshot snap;
+    ASSERT_EQ(now_watch_snapshot(p, basedir, &snap), 0);
+    /* hello project has at least main.c */
+    if (snap.count == 0) { FAIL("no files found"); now_project_free(p); return; }
+    /* pasta_mtime should be non-zero */
+    if (snap.pasta_mtime == 0) { FAIL("pasta_mtime is 0"); now_project_free(p); return; }
+
+    now_watch_snapshot_free(&snap);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_watch_diff_no_change(void) {
+    TEST("watch: diff detects no change");
+    NowWatchSnapshot a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.pasta_mtime = 100;
+    b.pasta_mtime = 100;
+    ASSERT_EQ(now_watch_diff(&a, &b), 0);
+    PASS();
+}
+
+static void test_watch_diff_source_change(void) {
+    TEST("watch: diff detects source change");
+    NowWatchEntry ea = { .path = "test.c", .mtime = 100 };
+    NowWatchEntry eb = { .path = "test.c", .mtime = 200 };
+    NowWatchSnapshot a = { .entries = &ea, .count = 1, .pasta_mtime = 100 };
+    NowWatchSnapshot b = { .entries = &eb, .count = 1, .pasta_mtime = 100 };
+    ASSERT_EQ(now_watch_diff(&a, &b), 1);
+    PASS();
+}
+
+static void test_watch_diff_pasta_change(void) {
+    TEST("watch: diff detects pasta change");
+    NowWatchSnapshot a = { .entries = NULL, .count = 0, .pasta_mtime = 100 };
+    NowWatchSnapshot b = { .entries = NULL, .count = 0, .pasta_mtime = 200 };
+    ASSERT_EQ(now_watch_diff(&a, &b), 2);
+    PASS();
+}
+
+static void test_watch_snapshot_free_null(void) {
+    TEST("watch: snapshot_free NULL is safe");
+    now_watch_snapshot_free(NULL);
+    NowWatchSnapshot s;
+    memset(&s, 0, sizeof(s));
+    now_watch_snapshot_free(&s);
     PASS();
 }
 
@@ -6203,6 +6279,14 @@ int main(void) {
     test_sbom_null_project();
     test_sbom_scope_mapping();
     test_sbom_no_deps();
+
+    printf("\n  Watch:\n");
+    test_watch_opts_init();
+    test_watch_snapshot_hello();
+    test_watch_diff_no_change();
+    test_watch_diff_source_change();
+    test_watch_diff_pasta_change();
+    test_watch_snapshot_free_null();
 
     printf("\n  Audit logging:\n");
     test_audit_config_parse_full();
