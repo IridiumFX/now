@@ -99,8 +99,8 @@ No urgency. Build when the moment is right or community asks.
 ## Self-hosting Milestone
 
 `now` builds itself from `now.pasta` using a bootstrap binary.
-27 source files, 4-way parallel, ~6s clean / ~700ms incremental.
-Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
+41 source files, 4-way parallel, ~23s clean / <1s no-op.
+Cold build performance: fixed IPv6 connect timeout + remote cache circuit breaker.
 
 ---
 
