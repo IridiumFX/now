@@ -1,13 +1,14 @@
 /*
  * now_watch.c — File watcher for incremental rebuilds
  *
- * Polls source directories for mtime changes and triggers rebuilds.
+ * Uses apennines fwatch for per-file mtime change detection.
  * Debounces rapid edits (editors do save-rename-rename sequences).
  */
 #include "now_watch.h"
 #include "now_fs.h"
 #include "now_lang.h"
 #include "now_audit.h"
+#include "apennines/t3/fs/fwatch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -175,6 +176,37 @@ NOW_API void now_watch_snapshot_free(NowWatchSnapshot *snap) {
     memset(snap, 0, sizeof(*snap));
 }
 
+/* ---- Register files with fwatch ---- */
+
+static int register_files_with_fwatch(fwatch *fw, const NowProject *project,
+                                       const char *basedir, uint32_t *pasta_wid) {
+    NowWatchSnapshot snap;
+    now_watch_snapshot(project, basedir, &snap);
+
+    int registered = 0;
+    for (size_t i = 0; i < snap.count; i++) {
+        char *full = now_path_join(basedir, snap.entries[i].path);
+        if (full) {
+            uint32_t wid;
+            if (fwatch_add(&wid, fw, full) == 0)
+                registered++;
+            free(full);
+        }
+    }
+
+    /* Watch now.pasta itself */
+    {
+        char *pasta_path = now_path_join(basedir, "now.pasta");
+        if (pasta_path) {
+            fwatch_add(pasta_wid, fw, pasta_path);
+            free(pasta_path);
+        }
+    }
+
+    now_watch_snapshot_free(&snap);
+    return registered;
+}
+
 /* ---- Watch loop ---- */
 
 NOW_API int now_watch(const NowProject *project, const char *basedir,
@@ -199,9 +231,16 @@ NOW_API int now_watch(const NowProject *project, const char *basedir,
     else
         fprintf(stderr, "[watch] build ok, watching for changes...\n");
 
-    /* Take initial snapshot */
-    NowWatchSnapshot prev;
-    now_watch_snapshot(project, basedir, &prev);
+    /* Create fwatch and register all source files */
+    fwatch *fw = NULL;
+    if (fwatch_create(&fw) != 0) {
+        fprintf(stderr, "[watch] failed to create file watcher\n");
+        return -1;
+    }
+
+    uint32_t pasta_wid = 0;
+    int nfiles = register_files_with_fwatch(fw, project, basedir, &pasta_wid);
+    fprintf(stderr, "[watch] monitoring %d files (poll %dms)\n", nfiles, poll_ms);
 
     int builds = 0;
 
@@ -209,31 +248,36 @@ NOW_API int now_watch(const NowProject *project, const char *basedir,
         watch_sleep(poll_ms);
         if (!g_watch_running) break;
 
-        NowWatchSnapshot cur;
-        now_watch_snapshot(project, basedir, &cur);
-
-        int diff = now_watch_diff(&prev, &cur);
-        if (diff == 0) {
-            now_watch_snapshot_free(&cur);
+        fwatch_event *events = NULL;
+        uint64_t event_count = 0;
+        if (fwatch_poll(&events, &event_count, fw) != 0 || event_count == 0) {
+            free(events);
             continue;
         }
 
-        /* Debounce: wait one more interval, check again */
+        /* Check if now.pasta changed */
+        int pasta_changed = 0;
+        for (uint64_t i = 0; i < event_count; i++) {
+            if (events[i].watch_id == pasta_wid) {
+                pasta_changed = 1;
+                break;
+            }
+        }
+        free(events);
+
+        /* Debounce: wait one more interval, drain any additional events */
         watch_sleep(poll_ms);
-        if (!g_watch_running) { now_watch_snapshot_free(&cur); break; }
+        if (!g_watch_running) break;
+        {
+            fwatch_event *more = NULL;
+            uint64_t more_count = 0;
+            fwatch_poll(&more, &more_count, fw);
+            free(more);
+        }
 
-        NowWatchSnapshot debounced;
-        now_watch_snapshot(project, basedir, &debounced);
-        int diff2 = now_watch_diff(&cur, &debounced);
-        now_watch_snapshot_free(&cur);
-
-        /* Use the debounced snapshot as current */
-        /* If still changing, the next poll iteration will catch it */
-
-        if (diff & 2) {
+        if (pasta_changed) {
             /* Project file changed — signal caller to reload */
-            now_watch_snapshot_free(&debounced);
-            now_watch_snapshot_free(&prev);
+            fwatch_destroy(fw);
             result->code = NOW_ERR_SCHEMA;
             snprintf(result->message, sizeof(result->message),
                      "now.pasta changed — reload required");
@@ -263,13 +307,14 @@ NOW_API int now_watch(const NowProject *project, const char *basedir,
                           rc == 0 ? "ok" : "error",
                           rc != 0 ? result->message : "watch");
 
-        now_watch_snapshot_free(&prev);
-        prev = debounced;
-
-        (void)diff2;
+        /* Re-register files (new files may have been added) */
+        fwatch_destroy(fw);
+        fw = NULL;
+        if (fwatch_create(&fw) != 0) break;
+        register_files_with_fwatch(fw, project, basedir, &pasta_wid);
     }
 
-    now_watch_snapshot_free(&prev);
+    fwatch_destroy(fw);
 
     /* Restore signal handlers */
     signal(SIGINT, SIG_DFL);

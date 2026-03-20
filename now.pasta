@@ -21,7 +21,8 @@
       "lib/basta/src/main/c/basta_lexer.c",
       "lib/basta/src/main/c/basta_parser.c",
       "lib/basta/src/main/c/basta_value.c",
-      "lib/basta/src/main/c/basta_writer.c"
+      "lib/basta/src/main/c/basta_writer.c",
+      "lib/apennines/src/main/c/fwatch.c"
     ]
   },
 
@@ -33,9 +34,10 @@
       "lib/alforno/src/main/h",
       "lib/alforno/src/main/c",
       "lib/basta/src/main/h",
-      "lib/basta/src/main/c"
+      "lib/basta/src/main/c",
+      "lib/apennines/src/main/h"
     ],
-    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "PASTA_STATIC", "ALF_STATIC", "BASTA_STATIC"]
+    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "PASTA_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"]
   },
 
   link: {
