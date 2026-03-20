@@ -7,6 +7,7 @@
  */
 
 #include "now_remote.h"
+#include "now_auth.h"
 #include "now_fs.h"
 #include "pico_http.h"
 
@@ -132,7 +133,8 @@ NOW_API void now_remote_config_free(NowRemoteCacheConfig *cfg) {
 
 /* ---- HTTP helpers ---- */
 
-/* Build an options struct with auth header and fast timeouts */
+/* Build an options struct with auth header and fast timeouts.
+ * Uses static token from config, or falls back to token cache (JWT from auth:login). */
 static void build_opts(const NowRemoteCacheConfig *cfg,
                         PicoHttpOptions *opts,
                         PicoHttpHeader *auth_hdr,
@@ -147,6 +149,17 @@ static void build_opts(const NowRemoteCacheConfig *cfg,
         auth_hdr->value = auth_buf;
         opts->headers = auth_hdr;
         opts->header_count = 1;
+    } else if (cfg->url) {
+        /* No static token — check token cache (JWT from auth:login) */
+        char *jwt = now_token_cache_get(cfg->url);
+        if (jwt) {
+            snprintf(auth_buf, auth_buf_len, "Bearer %s", jwt);
+            free(jwt);
+            auth_hdr->name = "Authorization";
+            auth_hdr->value = auth_buf;
+            opts->headers = auth_hdr;
+            opts->header_count = 1;
+        }
     }
 }
 
@@ -167,12 +180,13 @@ static char *build_url(const char *base_url, const char *cache_key,
 }
 
 /* ---- Circuit breaker ----
- * After one connection failure OR slow response (>1s), skip all subsequent
- * remote ops for this build. Avoids timeout penalties when server is
- * unreachable or experiencing high latency (e.g. IPv6 fallback). */
-static int remote_tripped = 0;
+ * After one connection failure, skip all remote ops.
+ * After one slow response (>1s), skip restores only (stores still attempted).
+ * Avoids timeout penalties when server is unreachable or slow (IPv6 fallback). */
+static int remote_tripped = 0;   /* hard trip: connection failure */
+static int remote_slow = 0;      /* soft trip: latency >1s, restore-only */
 
-NOW_API void now_remote_reset(void) { remote_tripped = 0; }
+NOW_API void now_remote_reset(void) { remote_tripped = 0; remote_slow = 0; }
 
 /* ---- Remote cache operations ---- */
 
@@ -181,7 +195,7 @@ NOW_API int now_remote_cache_restore(const NowRemoteCacheConfig *cfg,
                                       const char *dst_path,
                                       const char *obj_ext) {
     if (!cfg || !cfg->url || !cache_key || !dst_path) return -1;
-    if (remote_tripped) return -1;
+    if (remote_tripped || remote_slow) return -1;
 
     char *url = build_url(cfg->url, cache_key, obj_ext);
     if (!url) return -1;
@@ -200,14 +214,13 @@ NOW_API int now_remote_cache_restore(const NowRemoteCacheConfig *cfg,
     free(url);
 
     if (rc != PICO_OK) {
-        /* Connection failed — trip circuit breaker */
         remote_tripped = 1;
         pico_http_response_free(&res);
         return -1;
     }
     if (elapsed > 1.0) {
-        /* Slow response — trip circuit breaker (likely IPv6 fallback or WAN) */
-        remote_tripped = 1;
+        /* Slow response — skip future restores but still allow stores */
+        remote_slow = 1;
     }
     if (res.status != 200 || !res.body || res.body_len == 0) {
         pico_http_response_free(&res);
