@@ -60,8 +60,10 @@ add_library(now
     lib/alforno/src/main/c/alforno_param.c
     lib/alforno/src/main/c/alforno_merge.c
     lib/alforno/src/main/c/alforno_link.c
-    # Apennines fwatch (vendored — filesystem event watcher)
+    # Apennines (vendored — fwatch, buf, compress)
     lib/apennines/src/main/c/fwatch.c
+    lib/apennines/src/main/c/buf.c
+    lib/apennines/src/main/c/compress.c
     # Basta (vendored sources — single-file packages with embedded blobs)
     lib/basta/src/main/c/basta_lexer.c
     lib/basta/src/main/c/basta_parser.c

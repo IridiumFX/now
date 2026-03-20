@@ -22,7 +22,9 @@
       "lib/basta/src/main/c/basta_parser.c",
       "lib/basta/src/main/c/basta_value.c",
       "lib/basta/src/main/c/basta_writer.c",
-      "lib/apennines/src/main/c/fwatch.c"
+      "lib/apennines/src/main/c/fwatch.c",
+      "lib/apennines/src/main/c/buf.c",
+      "lib/apennines/src/main/c/compress.c"
     ]
   },
 

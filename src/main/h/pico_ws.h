@@ -79,6 +79,7 @@ typedef struct {
     const char           *ca_file;      /* Path to PEM CA bundle (NULL = system store) */
     const unsigned char  *ca_data;      /* PEM CA certificate data */
     size_t                ca_data_len;
+    int                   permessage_deflate;  /* 1 = negotiate permessage-deflate */
 } PicoWsOptions;
 
 /* ---- Core API ---- */

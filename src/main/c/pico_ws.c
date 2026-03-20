@@ -16,6 +16,8 @@
 #include "pico_ws.h"
 #include "pico_internal.h"
 #include "pico_http.h"  /* for PICO_ERR codes used in pico_connect */
+#include "apennines/t2/compress/compress.h"  /* permessage-deflate */
+typedef buf apn_buf;  /* avoid clash with pico_ws_recv 'buf' parameter */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,12 +98,14 @@ struct PicoWs {
     PicoConn conn;
     int      closed;
     int      recv_timeout_ms;
+    int      deflate;  /* 1 if permessage-deflate negotiated */
 };
 
 /* ---- WebSocket upgrade handshake ---- */
 
 static int pico_ws_do_handshake(PicoWs *ws, const char *host, int port,
-                                 const char *path, const char *protocol) {
+                                 const char *path, const char *protocol,
+                                 int want_deflate) {
     /* Generate 16-byte random key and base64 encode */
     unsigned char key_raw[16];
     char key_b64[32];
@@ -111,6 +115,8 @@ static int pico_ws_do_handshake(PicoWs *ws, const char *host, int port,
     /* Build upgrade request */
     char req[1024];
     int n;
+    const char *ext_hdr = want_deflate
+        ? "Sec-WebSocket-Extensions: permessage-deflate\r\n" : "";
     if (protocol) {
         n = snprintf(req, sizeof(req),
             "GET %s HTTP/1.1\r\n"
@@ -120,8 +126,9 @@ static int pico_ws_do_handshake(PicoWs *ws, const char *host, int port,
             "Sec-WebSocket-Key: %s\r\n"
             "Sec-WebSocket-Version: 13\r\n"
             "Sec-WebSocket-Protocol: %s\r\n"
+            "%s"
             "\r\n",
-            path, host, port, key_b64, protocol);
+            path, host, port, key_b64, protocol, ext_hdr);
     } else {
         n = snprintf(req, sizeof(req),
             "GET %s HTTP/1.1\r\n"
@@ -130,8 +137,9 @@ static int pico_ws_do_handshake(PicoWs *ws, const char *host, int port,
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Key: %s\r\n"
             "Sec-WebSocket-Version: 13\r\n"
+            "%s"
             "\r\n",
-            path, host, port, key_b64);
+            path, host, port, key_b64, ext_hdr);
     }
 
     if (pico_conn_send(&ws->conn, req, (size_t)n) != 0)
@@ -155,6 +163,10 @@ static int pico_ws_do_handshake(PicoWs *ws, const char *host, int port,
 
     /* We skip Sec-WebSocket-Accept validation — not security-critical
      * for our use case (localhost cookbook, trusted servers). */
+
+    /* Check if server accepted permessage-deflate */
+    if (want_deflate && strstr(resp, "permessage-deflate"))
+        ws->deflate = 1;
 
     return PICO_WS_OK;
 }
@@ -269,7 +281,8 @@ PICO_WS_API PicoWs *pico_ws_connect(const char *url,
 #endif
 
     /* WebSocket upgrade handshake */
-    int hs_rc = pico_ws_do_handshake(ws, host, port, path, protocol);
+    int want_deflate = opts ? opts->permessage_deflate : 0;
+    int hs_rc = pico_ws_do_handshake(ws, host, port, path, protocol, want_deflate);
     if (hs_rc != PICO_WS_OK) {
         pico_conn_close(&ws->conn);
         free(ws);
@@ -286,25 +299,51 @@ PICO_WS_API int pico_ws_send(PicoWs *ws, const void *data, size_t len,
     if (!ws || !data) return PICO_WS_ERR_INVALID;
     if (ws->closed) return PICO_WS_ERR_CLOSED;
 
+    /* Compress payload if permessage-deflate active */
+    apn_buf deflated_buf;
+    const void *send_data = data;
+    size_t send_len = len;
+    int compressed = 0;
+
+    if (ws->deflate && len > 0) {
+        buf_create(&deflated_buf, len);
+        if (deflate_compress(&deflated_buf, (u8 *)data, (u64)len,
+                              COMPRESS_LEVEL_FAST) == 0 && deflated_buf.len > 4) {
+            /* Remove trailing 0x00 0x00 0xFF 0xFF (per RFC 7692 section 7.2.1) */
+            if (deflated_buf.data[deflated_buf.len - 4] == 0x00 &&
+                deflated_buf.data[deflated_buf.len - 3] == 0x00 &&
+                deflated_buf.data[deflated_buf.len - 2] == 0xFF &&
+                deflated_buf.data[deflated_buf.len - 1] == 0xFF) {
+                deflated_buf.len -= 4;
+            }
+            send_data = deflated_buf.data;
+            send_len = (size_t)deflated_buf.len;
+            compressed = 1;
+        } else {
+            buf_destroy(&deflated_buf);
+        }
+    }
+
     /* Build frame header */
     unsigned char header[PICO_WS_MAX_FRAME_HEADER];
     size_t hlen = 0;
 
-    /* Byte 0: FIN + opcode */
-    header[hlen++] = (unsigned char)(0x80 | (is_binary ? 0x02 : 0x01));
+    /* Byte 0: FIN + RSV1 (if compressed) + opcode */
+    unsigned char byte0 = (unsigned char)(0x80 | (is_binary ? 0x02 : 0x01));
+    if (compressed) byte0 |= 0x40;  /* RSV1 = permessage-deflate */
+    header[hlen++] = byte0;
 
     /* Byte 1+: MASK bit set (client must mask) + payload length */
-    if (len <= 125) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
+    if (send_len <= 125) {
+        header[hlen++] = (unsigned char)(0x80 | send_len);
+    } else if (send_len <= 65535) {
         header[hlen++] = (unsigned char)(0x80 | 126);
-        header[hlen++] = (unsigned char)((len >> 8) & 0xFF);
-        header[hlen++] = (unsigned char)(len & 0xFF);
+        header[hlen++] = (unsigned char)((send_len >> 8) & 0xFF);
+        header[hlen++] = (unsigned char)(send_len & 0xFF);
     } else {
         header[hlen++] = (unsigned char)(0x80 | 127);
-        /* 8-byte length (big-endian) */
         for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xFF);
+            header[hlen++] = (unsigned char)((send_len >> (i * 8)) & 0xFF);
     }
 
     /* Masking key */
@@ -314,23 +353,28 @@ PICO_WS_API int pico_ws_send(PicoWs *ws, const void *data, size_t len,
     hlen += 4;
 
     /* Send header */
-    if (pico_conn_send(&ws->conn, (const char *)header, hlen) != 0)
+    if (pico_conn_send(&ws->conn, (const char *)header, hlen) != 0) {
+        if (compressed) buf_destroy(&deflated_buf);
         return PICO_WS_ERR_SEND;
+    }
 
     /* Send masked payload */
-    const unsigned char *src = (const unsigned char *)data;
+    const unsigned char *src = (const unsigned char *)send_data;
     size_t chunk = 4096;
-    unsigned char buf[4096];
+    unsigned char mbuf[4096];
     size_t sent = 0;
-    while (sent < len) {
-        size_t n = (len - sent < chunk) ? (len - sent) : chunk;
+    while (sent < send_len) {
+        size_t n = (send_len - sent < chunk) ? (send_len - sent) : chunk;
         for (size_t i = 0; i < n; i++)
-            buf[i] = src[sent + i] ^ mask[(sent + i) & 3];
-        if (pico_conn_send(&ws->conn, (const char *)buf, n) != 0)
+            mbuf[i] = src[sent + i] ^ mask[(sent + i) & 3];
+        if (pico_conn_send(&ws->conn, (const char *)mbuf, n) != 0) {
+            if (compressed) buf_destroy(&deflated_buf);
             return PICO_WS_ERR_SEND;
+        }
         sent += n;
     }
 
+    if (compressed) buf_destroy(&deflated_buf);
     return PICO_WS_OK;
 }
 
@@ -352,6 +396,7 @@ PICO_WS_API int pico_ws_recv(PicoWs *ws, void *buf, size_t buflen,
     }
 
     int opcode = hdr[0] & 0x0F;
+    int rsv1   = (hdr[0] >> 6) & 1;  /* permessage-deflate compressed */
     int masked = (hdr[1] >> 7) & 1;
     size_t payload_len = hdr[1] & 0x7F;
 
@@ -456,13 +501,36 @@ PICO_WS_API int pico_ws_recv(PicoWs *ws, void *buf, size_t buflen,
 
     /* Discard any excess payload beyond buflen */
     if (payload_len > buflen) {
-        char skip[256];
+        char discard[256];
         size_t remaining = payload_len - buflen;
         while (remaining > 0) {
-            size_t chunk = remaining > sizeof(skip) ? sizeof(skip) : remaining;
-            r = pico_conn_recv(&ws->conn, skip, (int)chunk);
+            size_t chunk = remaining > sizeof(discard) ? sizeof(discard) : remaining;
+            r = pico_conn_recv(&ws->conn, discard, (int)chunk);
             if (r <= 0) break;
             remaining -= (size_t)r;
+        }
+    }
+
+    /* Inflate if RSV1 set (permessage-deflate) */
+    if (rsv1 && ws->deflate && total > 0) {
+        /* Append 0x00 0x00 0xFF 0xFF trailer per RFC 7692 */
+        unsigned char *compressed_data = (unsigned char *)malloc(total + 4);
+        if (compressed_data) {
+            memcpy(compressed_data, buf, total);
+            compressed_data[total]     = 0x00;
+            compressed_data[total + 1] = 0x00;
+            compressed_data[total + 2] = 0xFF;
+            compressed_data[total + 3] = 0xFF;
+
+            apn_buf inf_buf;
+            buf_create(&inf_buf, total * 4);
+            if (deflate_decompress(&inf_buf, compressed_data, (u64)(total + 4)) == 0) {
+                size_t copy_len = inf_buf.len < buflen ? (size_t)inf_buf.len : buflen;
+                memcpy(buf, inf_buf.data, copy_len);
+                total = copy_len;
+            }
+            buf_destroy(&inf_buf);
+            free(compressed_data);
         }
     }
 
