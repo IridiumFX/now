@@ -35,6 +35,7 @@
 #include "now_cache.h"
 #include "now_sbom.h"
 #include "now_remote.h"
+#include "now_audit.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -882,6 +883,111 @@ static void test_sbom_no_deps(void) {
 
     free(json);
     now_project_free(p);
+    PASS();
+}
+
+/* ---- Audit logging ---- */
+
+static void test_audit_config_parse_full(void) {
+    TEST("audit: config parse with all fields");
+    const char *pasta = "{ audit: { enabled: true, max_entries: 500, log_path: \"/tmp/test.pasta\" } }";
+    NowAuditConfig cfg;
+    ASSERT_EQ(now_audit_config_parse(pasta, strlen(pasta), &cfg), 0);
+    ASSERT_EQ(cfg.enabled, 1);
+    ASSERT_EQ(cfg.max_entries, 500);
+    ASSERT_NOT_NULL(cfg.log_path);
+    ASSERT_STR(cfg.log_path, "/tmp/test.pasta");
+    now_audit_config_free(&cfg);
+    PASS();
+}
+
+static void test_audit_config_parse_disabled(void) {
+    TEST("audit: config parse disabled");
+    const char *pasta = "{ audit: { enabled: false } }";
+    NowAuditConfig cfg;
+    ASSERT_EQ(now_audit_config_parse(pasta, strlen(pasta), &cfg), 0);
+    ASSERT_EQ(cfg.enabled, 0);
+    now_audit_config_free(&cfg);
+    PASS();
+}
+
+static void test_audit_config_parse_no_section(void) {
+    TEST("audit: config parse missing section returns -1");
+    const char *pasta = "{ other: { foo: \"bar\" } }";
+    NowAuditConfig cfg;
+    ASSERT_EQ(now_audit_config_parse(pasta, strlen(pasta), &cfg), -1);
+    PASS();
+}
+
+static void test_audit_config_free_null(void) {
+    TEST("audit: config_free on zeroed struct is safe");
+    NowAuditConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    now_audit_config_free(&cfg);
+    now_audit_config_free(NULL);
+    PASS();
+}
+
+static void test_audit_event_name_roundtrip(void) {
+    TEST("audit: event name roundtrip");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_BUILD), "build");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_PUBLISH), "publish");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_YANK), "yank");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_PROCURE), "procure");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_AUTH_LOGIN), "auth_login");
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_VERIFY), "verify");
+    ASSERT_EQ(now_audit_event_parse("publish"), NOW_AUDIT_PUBLISH);
+    ASSERT_EQ(now_audit_event_parse("advisory"), NOW_AUDIT_ADVISORY);
+    PASS();
+}
+
+static void test_audit_record_disabled(void) {
+    TEST("audit: record when disabled is no-op");
+    int rc = now_audit_record(NOW_AUDIT_BUILD, "local", "test", "ok", NULL);
+    ASSERT_EQ(rc, 0);
+    PASS();
+}
+
+static void test_audit_record_and_show(void) {
+    TEST("audit: record and show roundtrip");
+    const char *tmp_cfg = "target/test_audit_config.pasta";
+    const char *tmp_log = "target/test_audit.pasta";
+    remove(tmp_log);
+
+    /* Create config and parse it */
+    {
+        FILE *f = fopen(tmp_cfg, "w");
+        if (f) {
+            fprintf(f, "{ audit: { enabled: true, log_path: \"%s\" } }\n", tmp_log);
+            fclose(f);
+        }
+    }
+
+    NowAuditConfig cfg;
+    size_t flen = 0;
+    char *data = NULL;
+    FILE *fp = fopen(tmp_cfg, "rb");
+    if (fp) {
+        fseek(fp, 0, SEEK_END);
+        flen = (size_t)ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        data = (char *)malloc(flen + 1);
+        if (data) { fread(data, 1, flen, fp); data[flen] = '\0'; }
+        fclose(fp);
+    }
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ(now_audit_config_parse(data, flen, &cfg), 0);
+    ASSERT_EQ(cfg.enabled, 1);
+    ASSERT_NOT_NULL(cfg.log_path);
+    if (strcmp(cfg.log_path, tmp_log) != 0) { FAIL("log_path mismatch"); return; }
+    free(data);
+    now_audit_config_free(&cfg);
+
+    /* Verify event name table completeness */
+    ASSERT_STR(now_audit_event_name(NOW_AUDIT_AUTH_LOGOUT), "auth_logout");
+
+    remove(tmp_log);
+    remove(tmp_cfg);
     PASS();
 }
 
@@ -6097,6 +6203,15 @@ int main(void) {
     test_sbom_null_project();
     test_sbom_scope_mapping();
     test_sbom_no_deps();
+
+    printf("\n  Audit logging:\n");
+    test_audit_config_parse_full();
+    test_audit_config_parse_disabled();
+    test_audit_config_parse_no_section();
+    test_audit_config_free_null();
+    test_audit_event_name_roundtrip();
+    test_audit_record_disabled();
+    test_audit_record_and_show();
 
     printf("\n  Build integration:\n");
     test_build_hello();

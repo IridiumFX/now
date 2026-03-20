@@ -78,7 +78,7 @@ adopting a build tool.
 | 3.2 | Distributed/remote build | DONE (Part A) — Remote object cache: `GET/PUT /objects/{key}`, config in `~/.now/config.pasta`, integrated into build loop, `now cache:remote-stats` |
 | 3.3 | SBOM generation | DONE — `now sbom` generates CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph |
 | 3.4 | LDAP/SSO auth for registries | DONE — Token/LDAP/OIDC auth methods, token caching with TTL, registry discovery, device code + client credentials flows, `auth:login/status/logout` CLI |
-| 3.5 | Audit logging | Who published what, when, approved by whom — regulated industries need this |
+| 3.5 | Audit logging | DONE — Client-side audit trail at `~/.now/audit.pasta`, event types: build/publish/yank/procure/auth/verify/advisory, `now audit:show` CLI with filtering, config in `~/.now/config.pasta` audit section, matches cookbook server-side format |
 
 ---
 
@@ -108,7 +108,7 @@ Benchmark vs ninja+CMake: 2-5x faster across clean/incremental/no-op.
 
 ```
 Tier 1 complete (1.1-1.5). Pasta ecosystem (P.1-P.3, P.5) complete.
-Tier 2 complete (2.1-2.5). Tier 3 in progress: 3.1-3.4 done. Next: 3.5 (audit logging).
+Tier 2 complete (2.1-2.5). Tier 3 complete (3.1-3.5).
 ```
 
 Self-hosting is done. Java + Maven interop bridges the enterprise world.

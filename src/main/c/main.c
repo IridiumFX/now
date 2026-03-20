@@ -32,6 +32,7 @@
 #include "now_repro.h"
 #include "now_advisory.h"
 #include "now_cache.h"
+#include "now_audit.h"
 #include "pasta.h"
 #include "alforno.h"
 
@@ -165,6 +166,7 @@ static void usage(void) {
         "  dep:updates  Check dependencies for newer versions\n"
         "  cache:clean  Remove all cached build objects\n"
         "  cache:stats  Show build cache statistics\n"
+        "  audit:show  Show audit log (--event TYPE, --last N)\n"
         "  cache:remote-stats  Show remote cache connectivity and info\n"
         "  cache:mirror Mirror artifacts from registry to local cache\n"
         "  export:cmake  Generate CMakeLists.txt from now.pasta\n"
@@ -632,6 +634,7 @@ int main(int argc, char *argv[]) {
             now_token_cache_put(repo_url, jwt, 3600);
             printf("Authenticated with %s\n", repo_url);
             if (verbose) printf("  Token: %s...\n", jwt);
+            now_audit_record(NOW_AUDIT_AUTH_LOGIN, "local", repo_url, "ok", NULL);
             free(jwt);
         }
         return 0;
@@ -656,6 +659,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         now_auth_logout(reg);
+        now_audit_record(NOW_AUDIT_AUTH_LOGOUT, "local", reg, "ok", NULL);
         return 0;
     }
 
@@ -781,6 +785,16 @@ int main(int argc, char *argv[]) {
         int rc = now_remote_cache_print_stats(&rcfg, verbose);
         now_remote_config_free(&rcfg);
         return rc;
+    }
+
+    if (strcmp(phase, "audit:show") == 0) {
+        const char *filter = NULL;
+        int last_n = 0;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--event") == 0 && i + 1 < argc) filter = argv[++i];
+            else if (strcmp(argv[i], "--last") == 0 && i + 1 < argc) last_n = atoi(argv[++i]);
+        }
+        return now_audit_show(filter, last_n, verbose);
     }
 
     if (strcmp(phase, "cache:mirror") == 0) {
@@ -1402,6 +1416,30 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "error: unknown phase '%s'\n\n", phase);
         usage();
         rc = 1;
+    }
+
+    /* Audit log — record significant operations */
+    if (phase) {
+        NowAuditEvent ae = (NowAuditEvent)-1;
+        if (strcmp(phase, "build") == 0 || strcmp(phase, "compile") == 0 ||
+            strcmp(phase, "test") == 0 || strcmp(phase, "link") == 0)
+            ae = NOW_AUDIT_BUILD;
+        else if (strcmp(phase, "publish") == 0)
+            ae = NOW_AUDIT_PUBLISH;
+        else if (strcmp(phase, "yank") == 0)
+            ae = NOW_AUDIT_YANK;
+        else if (strcmp(phase, "procure") == 0)
+            ae = NOW_AUDIT_PROCURE;
+
+        if ((int)ae >= 0) {
+            char target[256] = "";
+            if (project && project->group && project->artifact && project->version)
+                snprintf(target, sizeof(target), "%s:%s:%s",
+                         project->group, project->artifact, project->version);
+            now_audit_record(ae, "local", target,
+                             rc == 0 ? "ok" : "error",
+                             rc != 0 ? result.message : NULL);
+        }
     }
 
     now_project_free(project);
