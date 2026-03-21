@@ -59,7 +59,7 @@ static const char NOW_INIT_TEMPLATE[] =
     "@vars {\n"
     "  group:    \"com.example\",\n"
     "  artifact: \"myproject\",\n"
-    "  version:  \"0.1.0\",\n"
+    "  version:  \"1.0.0\",\n"
     "  lang:     \"c\",\n"
     "  std:      \"c11\",\n"
     "  type:     \"executable\"\n"
@@ -428,7 +428,77 @@ int main(int argc, char *argv[]) {
             art = art_buf;
         }
 
-        /* Determine source directories based on language */
+        /* Auto-detect languages from existing files */
+        int has_c = 0, has_cpp = 0, has_rs = 0, has_go = 0;
+        int has_java = 0, has_jl = 0;
+        char langs_str[256] = "";
+        {
+            NowFileList scan;
+            now_filelist_init(&scan);
+            static const char *all_exts[] = {
+                ".c", ".cpp", ".cc", ".rs", ".go", ".java", ".jl", NULL
+            };
+            const char *scan_dirs[] = { "src", ".", "lib", NULL };
+            for (int sd = 0; scan_dirs[sd]; sd++) {
+                if (now_path_exists(scan_dirs[sd]))
+                    now_discover_sources(cwd, scan_dirs[sd], all_exts, &scan);
+            }
+            for (size_t fi = 0; fi < scan.count; fi++) {
+                const char *ext = strrchr(scan.paths[fi], '.');
+                if (!ext) continue;
+                if (strcmp(ext, ".c") == 0) has_c = 1;
+                else if (strcmp(ext, ".rs") == 0) has_rs = 1;
+                else if (strcmp(ext, ".go") == 0) has_go = 1;
+                else if (strcmp(ext, ".java") == 0) has_java = 1;
+                else if (strcmp(ext, ".jl") == 0) has_jl = 1;
+                else if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0) has_cpp = 1;
+            }
+            now_filelist_free(&scan);
+        }
+        /* If user specified a language explicitly, use it; otherwise auto-detect */
+        if (strcmp(lang, "c") == 0 && (has_rs || has_go || has_java || has_jl || has_cpp)) {
+            /* Auto-detect primary */
+            if (has_java && !has_c && !has_cpp) lang = "java";
+            else if (has_rs) lang = "rust";
+            else if (has_go) lang = "go";
+            else if (has_jl) lang = "julia";
+            else if (has_cpp) lang = "c++";
+        }
+        /* Build langs string for multi-language projects */
+        {
+            char *p = langs_str;
+            size_t rem = sizeof(langs_str);
+            int first = 1;
+            /* Primary language (from --lang or auto-detect) */
+            const char *primary = lang;
+            /* Always include C if we have .c files and primary isn't C */
+            if (has_c && strcmp(primary, "c") != 0 && strcmp(primary, "c++") != 0 &&
+                strcmp(primary, "java") != 0) {
+                int n = snprintf(p, rem, "\"c\""); p += n; rem -= n; first = 0;
+            }
+            if (has_cpp && strcmp(primary, "c++") != 0) {
+                int n = snprintf(p, rem, "%s\"c++\"", first ? "" : ", ");
+                p += n; rem -= n; first = 0;
+            }
+            /* Add primary if not already added */
+            if (strcmp(primary, "c") != 0 || first) {
+                int n = snprintf(p, rem, "%s\"%s\"", first ? "" : ", ", primary);
+                p += n; rem -= n; first = 0;
+            }
+            /* Add secondary detected languages */
+            if (has_rs && strcmp(primary, "rust") != 0) {
+                int n = snprintf(p, rem, ", \"rust\""); p += n; rem -= n;
+            }
+            if (has_go && strcmp(primary, "go") != 0) {
+                int n = snprintf(p, rem, ", \"go\""); p += n; rem -= n;
+            }
+            if (has_jl && strcmp(primary, "julia") != 0) {
+                int n = snprintf(p, rem, ", \"julia\""); p += n; rem -= n;
+            }
+            (void)p; (void)rem;
+        }
+
+        /* Determine source directories and defaults based on language */
         const char *src_dir = "src/main/c";
         const char *hdr_dir = "src/main/h";
         const char *tst_dir = "src/test/c";
@@ -441,6 +511,30 @@ int main(int argc, char *argv[]) {
             src_ext = ".cpp";
             std_str = "c++17";
             lang = "c++";
+        } else if (strcmp(lang, "rust") == 0) {
+            src_dir = "src/main/c";  /* mixed C/Rust in same dir */
+            hdr_dir = "src/main/h";
+            tst_dir = "src/test/c";
+            src_ext = ".rs";
+            std_str = "2021";
+        } else if (strcmp(lang, "go") == 0) {
+            src_dir = "src/main/c";
+            hdr_dir = "src/main/h";
+            tst_dir = "src/test/c";
+            src_ext = ".go";
+            std_str = NULL;
+        } else if (strcmp(lang, "java") == 0) {
+            src_dir = "src/main/java";
+            hdr_dir = NULL;
+            tst_dir = "src/test/java";
+            src_ext = ".java";
+            std_str = "17";
+        } else if (strcmp(lang, "julia") == 0) {
+            src_dir = "src/main/c";
+            hdr_dir = "src/main/h";
+            tst_dir = "src/test/c";
+            src_ext = ".jl";
+            std_str = NULL;
         }
 
         /* Check if now.pasta already exists */
@@ -449,8 +543,35 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "now.pasta already exists — skipping\n");
         } else {
             /* Render now.pasta via alforno template */
-            char *content = now_init_render(group, art, "0.1.0",
-                                             lang, std_str, type);
+            /* Generate now.pasta with detected languages */
+            char pasta_buf[2048];
+            if (std_str && std_str[0]) {
+                snprintf(pasta_buf, sizeof(pasta_buf),
+                    "{\n"
+                    "  group:    \"%s\",\n"
+                    "  artifact: \"%s\",\n"
+                    "  version:  \"1.0.0\",\n"
+                    "  langs:    [%s],\n"
+                    "  std:      \"%s\",\n"
+                    "  output:   { type: \"%s\", name: \"%s\" },\n"
+                    "  compile:  { warnings: [\"Wall\", \"Wextra\"] },\n"
+                    "  deps:     []\n"
+                    "}\n",
+                    group, art, langs_str, std_str, type, art);
+            } else {
+                snprintf(pasta_buf, sizeof(pasta_buf),
+                    "{\n"
+                    "  group:    \"%s\",\n"
+                    "  artifact: \"%s\",\n"
+                    "  version:  \"1.0.0\",\n"
+                    "  langs:    [%s],\n"
+                    "  output:   { type: \"%s\", name: \"%s\" },\n"
+                    "  compile:  { warnings: [\"Wall\", \"Wextra\"] },\n"
+                    "  deps:     []\n"
+                    "}\n",
+                    group, art, langs_str, type, art);
+            }
+            char *content = strdup(pasta_buf);
             if (!content) {
                 fprintf(stderr, "error: template rendering failed\n");
                 free(pasta_path);
@@ -473,7 +594,7 @@ int main(int argc, char *argv[]) {
         /* Create directories */
         char *dirs[] = { NULL, NULL, NULL, NULL };
         dirs[0] = now_path_join(cwd, src_dir);
-        dirs[1] = now_path_join(cwd, hdr_dir);
+        dirs[1] = hdr_dir ? now_path_join(cwd, hdr_dir) : NULL;
         dirs[2] = now_path_join(cwd, tst_dir);
         for (int i = 0; dirs[i]; i++) {
             if (!now_path_exists(dirs[i])) {
@@ -498,6 +619,34 @@ int main(int argc, char *argv[]) {
                         "    std::cout << \"hello from %s\" << std::endl;\n"
                         "    return 0;\n"
                         "}\n", art);
+                } else if (strcmp(lang, "rust") == 0) {
+                    fprintf(f,
+                        "#[no_mangle]\n"
+                        "pub extern \"C\" fn hello() -> i32 {\n"
+                        "    // hello from %s\n"
+                        "    0\n"
+                        "}\n", art);
+                } else if (strcmp(lang, "go") == 0) {
+                    fprintf(f,
+                        "package main\n\n"
+                        "import \"C\"\nimport \"fmt\"\n\n"
+                        "//export go_hello\n"
+                        "func go_hello() C.int {\n"
+                        "    fmt.Println(\"hello from %s\")\n"
+                        "    return 0\n"
+                        "}\n\n"
+                        "func main() {}\n", art);
+                } else if (strcmp(lang, "java") == 0) {
+                    fprintf(f,
+                        "public class Main {\n"
+                        "    public static void main(String[] args) {\n"
+                        "        System.out.println(\"hello from %s\");\n"
+                        "    }\n"
+                        "}\n", art);
+                } else if (strcmp(lang, "julia") == 0) {
+                    fprintf(f,
+                        "# %s — Julia module\n"
+                        "println(\"hello from %s\")\n", art, art);
                 } else {
                     fprintf(f,
                         "#include <stdio.h>\n\n"
@@ -513,7 +662,8 @@ int main(int argc, char *argv[]) {
         free(main_path);
         free(main_rel);
 
-        /* Write placeholder header */
+        /* Write placeholder header (C/C++ only) */
+        if (!hdr_dir) goto skip_header;
         char hdr_name[128];
         snprintf(hdr_name, sizeof(hdr_name), "%s.h", art);
         char *hdr_rel = now_path_join(hdr_dir, hdr_name);
@@ -540,6 +690,7 @@ int main(int argc, char *argv[]) {
         }
         free(hdr_path);
         free(hdr_rel);
+skip_header:
 
         /* Write placeholder test */
         char tst_name[64];
