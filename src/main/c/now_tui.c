@@ -5,6 +5,8 @@
  */
 #include "now_tui.h"
 
+NOW_API NowTui *now_tui_global = NULL;
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

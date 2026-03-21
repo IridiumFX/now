@@ -9,6 +9,7 @@
 #include "now_module.h"
 #include "now_cache.h"
 #include "now_remote.h"
+#include "now_tui.h"
 #include "now.h"
 
 #include <stdlib.h>
@@ -1613,6 +1614,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             if (entry->object)
                 now_filelist_push(&ctx->objects, entry->object);
             skipped++;
+            if (now_tui_global) now_tui_skip(now_tui_global);
             continue;
         }
 
@@ -1642,6 +1644,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     if (obj && now_cache_restore_ex(ckey, obj, obj_ext) == 0) {
                         restored = 1;
                         cache_hits++;
+                        if (now_tui_global) now_tui_cache_hit(now_tui_global, 0);
                     }
 
                     /* Try remote cache on local miss */
@@ -1649,6 +1652,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                         now_remote_cache_restore(&remote_cfg, ckey, obj, obj_ext) == 0) {
                         restored = 1;
                         remote_hits++;
+                        if (now_tui_global) now_tui_cache_hit(now_tui_global, 1);
                         /* Populate local cache for next time */
                         now_cache_store(ckey, obj, obj_ext);
                     }
@@ -1795,7 +1799,9 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             for (size_t i = 0; i < njobs; i++) {
                 NowCompileJob *job = &jobs[i];
 
-                if (ctx->verbose) {
+                if (now_tui_global)
+                    now_tui_compile_start(now_tui_global, job->src_rel);
+                else if (ctx->verbose) {
                     fprintf(stderr, " ");
                     for (int a = 0; a < job->argc; a++)
                         fprintf(stderr, " %s", job->argv[a]);
@@ -1810,6 +1816,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                                  "compiler failed on %s (exit %d)", job->src_rel, rc);
                     }
                     errors++;
+                    if (now_tui_global) now_tui_compile_done(now_tui_global, job->src_rel, 0);
                     continue;
                 }
 
@@ -1870,6 +1877,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
                 now_filelist_push(&ctx->objects, job->obj_path);
                 compiled++;
+                if (now_tui_global) now_tui_compile_done(now_tui_global, job->src_rel, 1);
             }
         } else {
             /* Parallel execution with process pool */
@@ -1900,9 +1908,12 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                     NowCompileJob *job = &jobs[next_job];
 
                     if (ctx->verbose) {
-                        fprintf(stderr, "  [%zu/%zu] %s\n",
-                                next_job + 1, njobs, job->src_rel);
+                        if (!now_tui_global)
+                            fprintf(stderr, "  [%zu/%zu] %s\n",
+                                    next_job + 1, njobs, job->src_rel);
                     }
+                    if (now_tui_global)
+                        now_tui_compile_start(now_tui_global, job->src_rel);
 
                     slots[slot_idx].source_idx = next_job;
                     if (spawn_captured((const char *const *)job->argv,
@@ -1950,6 +1961,10 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                                      job->src_rel, exit_code);
                         }
                         errors++;
+                        if (now_tui_global) {
+                            now_tui_compile_done(now_tui_global, job->src_rel, 0);
+                            if (result) now_tui_error(now_tui_global, result->message);
+                        }
                     } else {
                         /* Print captured output only if verbose */
                         if (ctx->verbose && captured.data && captured.len > 0)
@@ -2016,6 +2031,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
                         now_filelist_push(&ctx->objects, job->obj_path);
                         compiled++;
+                        if (now_tui_global) now_tui_compile_done(now_tui_global, job->src_rel, 1);
                     }
 
                     free(captured.data);
@@ -2052,7 +2068,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     now_module_scan_free(&modscan);
     if (has_remote) now_remote_config_free(&remote_cfg);
 
-    if (ctx->verbose && (compiled > 0 || skipped > 0 || cache_hits > 0 || remote_hits > 0)) {
+    if (ctx->verbose && !now_tui_global && (compiled > 0 || skipped > 0 || cache_hits > 0 || remote_hits > 0)) {
         int total_cached = cache_hits + remote_hits;
         if (total_cached > 0 && compiled > 0 && max_jobs > 1) {
             if (remote_hits > 0)

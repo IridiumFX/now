@@ -56,4 +56,7 @@ NOW_API void now_tui_error(NowTui *tui, const char *msg);
 /* Finalize TUI — print summary, restore terminal. */
 NOW_API void now_tui_finish(NowTui *tui, int success);
 
+/* Global TUI pointer — set by main.c, read by now_build.c */
+NOW_API extern NowTui *now_tui_global;
+
 #endif /* NOW_TUI_H */

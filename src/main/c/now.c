@@ -7,6 +7,7 @@
 #include "now_plugin.h"
 #include "now_version.h"
 #include "now_fs.h"
+#include "now_tui.h"
 #include "now.h"
 
 #include <stdio.h>
@@ -276,6 +277,7 @@ NOW_API int now_build(const NowProject *project, const char *basedir,
     rc = now_build_compile(&ctx, result);
     if (rc != 0) { now_build_free(&ctx); return rc; }
 
+    if (now_tui_global) now_tui_link(now_tui_global);
     rc = now_build_link(&ctx, result);
     now_build_free(&ctx);
     return rc;

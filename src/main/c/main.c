@@ -929,6 +929,22 @@ int main(int argc, char *argv[]) {
         now_plugin_result_free(&gen);
 
     } else if (strcmp(phase, "build") == 0) {
+        NowTui tui;
+        if (flag_tui) {
+            /* Count sources: discovered + explicitly included */
+            NowFileList fl;
+            now_filelist_init(&fl);
+            static const char *src_exts[] = {".c", ".cpp", ".cc", ".cxx", NULL};
+            if (project->sources.dir)
+                now_discover_sources(cwd, project->sources.dir, src_exts, &fl);
+            int total = (int)fl.count + (int)project->sources.include.count;
+            now_filelist_free(&fl);
+            int max_j = jobs > 0 ? jobs : now_cpu_count();
+            now_tui_init(&tui, project->artifact ? project->artifact : "build",
+                          total, max_j);
+            now_tui_global = &tui;
+        }
+
         if (now_is_workspace(project)) {
             NowWorkspace ws;
             rc = now_workspace_init(&ws, project, cwd, &result);
@@ -938,7 +954,11 @@ int main(int argc, char *argv[]) {
         } else {
             rc = now_build(project, cwd, verbose, jobs, &result);
         }
-        if (rc != 0)
+
+        if (flag_tui) {
+            now_tui_finish(&tui, rc == 0);
+            now_tui_global = NULL;
+        } else if (rc != 0)
             fprintf(stderr, "error: %s\n", result.message);
 
     } else if (strcmp(phase, "compile") == 0) {
