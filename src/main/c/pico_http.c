@@ -14,6 +14,7 @@
 
 #include "pico_http.h"
 #include "pico_internal.h"
+#include "pico_h2.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -363,6 +364,17 @@ static int pico_request_once(const char *method,
             pico_conn_close(&conn);
             return tls_rc;
         }
+    }
+#endif
+
+#ifdef PICO_HTTP_TLS
+    /* HTTP/2 dispatch if ALPN negotiated h2 */
+    if (conn.alpn_h2) {
+        int h2rc = pico_h2_request(&conn, method, host, path,
+                                    content_type, req_body, req_body_len,
+                                    opts, is_head, out);
+        pico_conn_close(&conn);
+        return h2rc;
     }
 #endif
 

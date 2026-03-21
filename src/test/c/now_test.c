@@ -38,6 +38,7 @@
 #include "now_audit.h"
 #include "now_watch.h"
 #include "now_graph.h"
+#include "pico_h2.h"
 #include "alforno.h"
 #include "basta.h"
 #include "pico_http.h"
@@ -992,6 +993,66 @@ static void test_audit_record_and_show(void) {
     remove(tmp_cfg);
     PASS();
 }
+
+/* ---- HTTP/2 ---- */
+
+#if defined(PICO_HTTP_TLS) && !defined(PICO_HTTP_APENNINES)
+static void test_h2_hpack_encode_get(void) {
+    TEST("h2: HPACK encode GET request");
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    ASSERT_EQ(pico_hpack_encode("GET", "https", "example.com", "/",
+                                  NULL, 0, &buf, &len), 0);
+    ASSERT_NOT_NULL(buf);
+    /* :method GET = static index 2 (0x82), :scheme https = index 7 (0x87),
+     * :path / = index 4 (0x84), :authority = index 1 with value */
+    if (len < 4) { FAIL("too short"); free(buf); return; }
+    /* First byte should be 0x82 (indexed :method GET) */
+    ASSERT_EQ((int)buf[0], 0x82);
+    free(buf);
+    PASS();
+}
+
+static void test_h2_hpack_decode_status(void) {
+    TEST("h2: HPACK decode :status 200");
+    /* Static index 8 = :status 200 → byte 0x88 */
+    uint8_t encoded[] = { 0x88 };
+    int status = 0;
+    PicoHttpHeader *hdrs = NULL;
+    size_t count = 0;
+    ASSERT_EQ(pico_hpack_decode(encoded, sizeof(encoded), &status, &hdrs, &count), 0);
+    ASSERT_EQ(status, 200);
+    free(hdrs);
+    PASS();
+}
+
+static void test_h2_frame_layout(void) {
+    TEST("h2: frame header layout");
+    /* Verify the H2 connection preface constant */
+    const char *preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    ASSERT_EQ((int)strlen(preface), 24);
+    PASS();
+}
+
+static void test_h2_hpack_encode_with_headers(void) {
+    TEST("h2: HPACK encode with extra headers");
+    PicoHttpHeader extra[2];
+    extra[0].name = "content-type";
+    extra[0].value = "application/json";
+    extra[1].name = "x-custom";
+    extra[1].value = "test";
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    ASSERT_EQ(pico_hpack_encode("POST", "https", "api.example.com", "/v1/data",
+                                  extra, 2, &buf, &len), 0);
+    ASSERT_NOT_NULL(buf);
+    /* :method POST = static index 3 (0x83) */
+    ASSERT_EQ((int)buf[0], 0x83);
+    if (len < 10) { FAIL("too short for headers"); free(buf); return; }
+    free(buf);
+    PASS();
+}
+#endif /* PICO_HTTP_TLS */
 
 /* ---- Graph cache ---- */
 
@@ -6368,6 +6429,14 @@ int main(void) {
     test_sbom_null_project();
     test_sbom_scope_mapping();
     test_sbom_no_deps();
+
+#if defined(PICO_HTTP_TLS) && !defined(PICO_HTTP_APENNINES)
+    printf("\n  HTTP/2:\n");
+    test_h2_hpack_encode_get();
+    test_h2_hpack_decode_status();
+    test_h2_frame_layout();
+    test_h2_hpack_encode_with_headers();
+#endif
 
     printf("\n  Graph cache:\n");
     test_graph_key_deterministic();

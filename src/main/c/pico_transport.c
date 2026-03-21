@@ -319,6 +319,9 @@ int pico_tls_handshake(PicoConn *c, const char *hostname) {
         mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
     }
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
+    /* ALPN: prefer h2, fall back to http/1.1 */
+    static const char *alpn_list[] = { "h2", "http/1.1", NULL };
+    mbedtls_ssl_conf_alpn_protocols(&c->conf, alpn_list);
     if (mbedtls_ssl_setup(&c->ssl, &c->conf) != 0) return PICO_ERR_TLS;
     mbedtls_ssl_set_hostname(&c->ssl, hostname);
     mbedtls_ssl_set_bio(&c->ssl, &c->sock, pico_tls_send, pico_tls_recv, NULL);
@@ -328,6 +331,9 @@ int pico_tls_handshake(PicoConn *c, const char *hostname) {
             return PICO_ERR_TLS;
     }
     c->use_tls = 1;
+    /* Check ALPN result */
+    const char *alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
+    c->alpn_h2 = (alpn && strcmp(alpn, "h2") == 0) ? 1 : 0;
     return PICO_OK;
 }
 

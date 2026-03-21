@@ -66,6 +66,7 @@ typedef struct {
     int                      tls_init;
     int                      tls_verify;   /* 1=REQUIRED (default), 0=NONE */
     int                      cacert_init;  /* 1 if cacert has been initialized */
+    int                      alpn_h2;     /* 1 if ALPN negotiated h2 */
 #endif
 } PicoConn;
 

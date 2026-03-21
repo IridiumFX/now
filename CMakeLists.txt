@@ -35,6 +35,7 @@ add_library(now
     src/main/c/pico_http.c
     src/main/c/pico_transport.c
     src/main/c/pico_http_apennines.c
+    src/main/c/pico_h2.c
     src/main/c/pico_ws.c
     src/main/c/now_procure.c
     src/main/c/now_package.c
