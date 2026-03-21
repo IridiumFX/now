@@ -1,0 +1,9 @@
+{
+  group:    "dev.iridium",
+  artifact: "goffi-test",
+  version:  "0.1.0",
+  langs:    ["c", "go"],
+  sources: { dir: "src/main/c", headers: "src/main/h" },
+  compile: { warnings: ["Wall"] },
+  link: { output: "executable" }
+}

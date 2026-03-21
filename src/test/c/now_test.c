@@ -1017,6 +1017,45 @@ static void test_rust_classify_rs(void) {
     PASS();
 }
 
+/* ---- Go + Julia ---- */
+
+static void test_go_lang_registered(void) {
+    TEST("go: language registered");
+    const NowLangDef *lang = now_lang_find("go");
+    ASSERT_NOT_NULL(lang);
+    ASSERT_STR(lang->id, "go");
+    PASS();
+}
+
+static void test_go_classify(void) {
+    TEST("go: classify .go as go-source");
+    const char *langs[] = { "go", NULL };
+    const NowLangDef *lang = NULL;
+    const NowLangType *type = now_lang_classify("main.go", langs, 1, &lang);
+    ASSERT_NOT_NULL(type);
+    ASSERT_STR(type->id, "go-source");
+    ASSERT_STR(type->tool_var, "${go}");
+    PASS();
+}
+
+static void test_julia_lang_registered(void) {
+    TEST("julia: language registered");
+    const NowLangDef *lang = now_lang_find("julia");
+    ASSERT_NOT_NULL(lang);
+    ASSERT_STR(lang->id, "julia");
+    PASS();
+}
+
+static void test_julia_classify(void) {
+    TEST("julia: classify .jl as julia-source");
+    const char *langs[] = { "julia", NULL };
+    const NowLangDef *lang = NULL;
+    const NowLangType *type = now_lang_classify("solver.jl", langs, 1, &lang);
+    ASSERT_NOT_NULL(type);
+    ASSERT_STR(type->id, "julia-source");
+    PASS();
+}
+
 /* ---- HTTP/2 ---- */
 
 #if defined(PICO_HTTP_TLS) && !defined(PICO_HTTP_APENNINES)
@@ -6479,6 +6518,12 @@ int main(void) {
     printf("\n  Rust FFI:\n");
     test_rust_lang_registered();
     test_rust_classify_rs();
+
+    printf("\n  Go + Julia:\n");
+    test_go_lang_registered();
+    test_go_classify();
+    test_julia_lang_registered();
+    test_julia_classify();
 
     printf("\n  Audit logging:\n");
     test_audit_config_parse_full();

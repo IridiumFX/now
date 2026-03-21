@@ -479,6 +479,14 @@ NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
     /* Rust — resolve rustc for mixed C/Rust projects */
     if (has_lang(p, "rust"))
         tc->rustc = resolve_tool("RUSTC", "rustc");
+
+    /* Go — resolve go for mixed C/Go projects */
+    if (has_lang(p, "go"))
+        tc->go = resolve_tool("GO", "go");
+
+    /* Julia — resolve julia for embedded Julia */
+    if (has_lang(p, "julia"))
+        tc->julia = resolve_tool("JULIA", "julia");
 }
 
 NOW_API void now_toolchain_free(NowToolchain *tc) {
@@ -491,6 +499,8 @@ NOW_API void now_toolchain_free(NowToolchain *tc) {
     free(tc->jar);
     free(tc->java);
     free(tc->rustc);
+    free(tc->go);
+    free(tc->julia);
     memset(tc, 0, sizeof(*tc));
 }
 
@@ -877,6 +887,56 @@ static int build_compile_job_rust(NowBuildCtx *ctx, const char *src_rel,
     tmp_argv[tmp_argc] = NULL;
 
     /* Copy to job */
+    job->argv = (char **)malloc((tmp_argc + 1) * sizeof(char *));
+    if (!job->argv) { free(obj); free(src_full); return -1; }
+    for (int i = 0; i < tmp_argc; i++)
+        job->argv[i] = strdup(tmp_argv[i]);
+    job->argv[tmp_argc] = NULL;
+    job->argc = tmp_argc;
+    job->src_rel = strdup(src_rel);
+    job->obj_path = obj;
+
+    free(src_full);
+    return 0;
+}
+
+/* ---- Go compile job (cgo c-archive) ---- */
+
+static int build_compile_job_go(NowBuildCtx *ctx, const char *src_rel,
+                                  const NowLangType *type, const NowLangDef *lang,
+                                  NowCompileJob *job) {
+    const NowProject *p = ctx->project;
+    const char *basedir = ctx->basedir;
+    (void)type; (void)lang;
+    memset(job, 0, sizeof(*job));
+
+    const char *go = ctx->toolchain.go;
+    if (!go) return -1;
+
+    /* Output .a path */
+    char *obj = now_obj_path(basedir, src_rel, p->sources.dir, ctx->target_dir);
+    if (!obj) return -1;
+
+    char *obj_dir = strdup(obj);
+    char *sep = strrchr(obj_dir, '/');
+    if (!sep) sep = strrchr(obj_dir, '\\');
+    if (sep) { *sep = '\0'; now_mkdir_p(obj_dir); }
+    free(obj_dir);
+
+    char *src_full = now_path_join(basedir, src_rel);
+    if (!src_full) { free(obj); return -1; }
+
+    /* go build -buildmode=c-archive -o obj src */
+    const char *tmp_argv[16];
+    int tmp_argc = 0;
+    tmp_argv[tmp_argc++] = go;
+    tmp_argv[tmp_argc++] = "build";
+    tmp_argv[tmp_argc++] = "-buildmode=c-archive";
+    tmp_argv[tmp_argc++] = "-o";
+    tmp_argv[tmp_argc++] = obj;
+    tmp_argv[tmp_argc++] = src_full;
+    tmp_argv[tmp_argc] = NULL;
+
     job->argv = (char **)malloc((tmp_argc + 1) * sizeof(char *));
     if (!job->argv) { free(obj); free(src_full); return -1; }
     for (int i = 0; i < tmp_argc; i++)
@@ -1761,6 +1821,8 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         int jrc;
         if (type->tool_var && strcmp(type->tool_var, "${rustc}") == 0)
             jrc = build_compile_job_rust(ctx, src, type, lang, &jobs[njobs]);
+        else if (type->tool_var && strcmp(type->tool_var, "${go}") == 0)
+            jrc = build_compile_job_go(ctx, src, type, lang, &jobs[njobs]);
         else if (ctx->toolchain.is_msvc)
             jrc = build_compile_job_msvc(ctx, src, type, lang, &jobs[njobs]);
         else
@@ -2509,6 +2571,18 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = "-lntdll";
 #else
                 argv[argc++] = "-ldl";
+                argv[argc++] = "-lpthread";
+                argv[argc++] = "-lm";
+#endif
+            }
+
+            /* Go runtime deps */
+            if (ctx->toolchain.go) {
+#ifdef _WIN32
+                argv[argc++] = "-lws2_32";
+                argv[argc++] = "-lwinmm";
+                argv[argc++] = "-lntdll";
+#else
                 argv[argc++] = "-lpthread";
                 argv[argc++] = "-lm";
 #endif

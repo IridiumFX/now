@@ -23,6 +23,8 @@ typedef struct {
     char *jar;     /* JAR tool */
     char *java;    /* Java runtime */
     char *rustc;   /* Rust compiler */
+    char *go;      /* Go toolchain */
+    char *julia;   /* Julia runtime (for embedding) */
 } NowToolchain;
 
 /* Initialize toolchain from environment / defaults */

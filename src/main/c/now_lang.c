@@ -205,6 +205,50 @@ static const NowLangDef lang_rust = {
     .type_count = sizeof(rust_types) / sizeof(rust_types[0])
 };
 
+/* Go language (cgo FFI via c-archive) */
+static const char *go_source_exts[] = { ".go", NULL };
+
+static const NowLangType go_types[] = {
+    {
+        .id         = "go-source",
+        .extensions = go_source_exts,
+        .role       = NOW_ROLE_SOURCE,
+        .tool_var   = "${go}",
+        .produces   = NOW_PRODUCES_OBJECT,
+        .output_ext = ".go.a"
+    }
+};
+
+static const NowLangDef lang_go = {
+    .id         = "go",
+    .name       = "Go",
+    .std_flag   = NULL,
+    .types      = go_types,
+    .type_count = sizeof(go_types) / sizeof(go_types[0])
+};
+
+/* Julia language (embedded via libjulia) */
+static const char *julia_source_exts[] = { ".jl", NULL };
+
+static const NowLangType julia_types[] = {
+    {
+        .id         = "julia-source",
+        .extensions = julia_source_exts,
+        .role       = NOW_ROLE_SOURCE,
+        .tool_var   = "${julia}",
+        .produces   = NOW_PRODUCES_NONE,
+        .output_ext = NULL
+    }
+};
+
+static const NowLangDef lang_julia = {
+    .id         = "julia",
+    .name       = "Julia",
+    .std_flag   = NULL,
+    .types      = julia_types,
+    .type_count = sizeof(julia_types) / sizeof(julia_types[0])
+};
+
 /* ---- Registry ---- */
 
 static const NowLangDef *registry[] = {
@@ -214,6 +258,8 @@ static const NowLangDef *registry[] = {
     &lang_nasm,
     &lang_java,
     &lang_rust,
+    &lang_go,
+    &lang_julia,
     NULL
 };
 
