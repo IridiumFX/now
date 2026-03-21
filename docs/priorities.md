@@ -84,15 +84,14 @@ adopting a build tool.
 
 ## Tier 4 — Nice to Have
 
-No urgency. Build when the moment is right or community asks.
-
-| Item | Notes |
-|------|-------|
-| `export:bazel` | Promote to tier 2 if adoption demands it |
-| WebSocket extensions (permessage-deflate) | pico_ws polish |
-| HTTP/2 in pico_http | Performance gain but HTTP/1.1 works fine for registries |
-| `now watch` (file watcher rebuild) | Cool DX but tinkerers already have `entr`/`watchexec` |
-| GUI/TUI dashboard | Flashy but not essential |
+| Item | Status |
+|------|--------|
+| `export:bazel` | DONE (Tier 2) |
+| WebSocket permessage-deflate | DONE — apennines Deflate, RFC 7692 |
+| HTTP/2 in pico_http | DONE — HPACK, frame codec, ALPN negotiation |
+| `now watch` | DONE — fwatch backend, debounce, project reload |
+| TUI dashboard | DONE — `--tui` flag, live progress bar, color-coded |
+| Additional languages (1.6) | TODO — Rust FFI, Go |
 
 ---
 
