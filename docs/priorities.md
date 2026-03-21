@@ -1,114 +1,80 @@
-# now — Post-v1 Priority Map
+# now — v1.0 Release Status
 
-Priorities organized by audience tier. Within each tier, items are ordered
-by impact.
+All tiers complete. Zero open backlog items.
 
 ---
 
 ## Tier 0 — Hygiene
 
-Things that should already be right. Fix before anything else.
-
 | # | Item | Status |
 |---|------|--------|
-| 0.1 | Enforce h/c separation — move internal `.h` files out of `src/main/c/` | DONE |
-
----
+| 0.1 | Enforce h/c separation | DONE |
 
 ## Tier 1 — Tinkerer Superchargers
 
-Get people hooked. Empower early adopters, give them reasons to spread
-the word.
+| # | Item | Status |
+|---|------|--------|
+| 1.1 | `compile_commands.json` | DONE — `now compile-db` |
+| 1.2 | `now init` scaffolding | DONE — Alforno-templated |
+| 1.3 | `now fmt` | DONE — `PASTA_SORTED` + `PASTA_PRETTY` |
+| 1.4 | C++20 modules | DONE — pre-scan, topo sort, GCC/MSVC |
+| 1.5 | Java support | DONE — javac/jar, Maven layout |
+| 1.6 | Additional languages | DONE — Rust FFI, Go cgo, Julia embedding |
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 1.1 | `compile_commands.json` | DONE | `now compile-db` generates arguments-form JSON |
-| 1.2 | `now init` scaffolding | DONE | Alforno-templated scaffolding, C/C++ |
-| 1.3 | `now fmt` (Pasta formatter) | DONE | `PASTA_SORTED` + `PASTA_PRETTY` |
-| 1.4 | C++20 modules (pre-scan) | DONE | Module scanner, topo sort, GCC `-fmodules-ts`, MSVC `/interface`, `.cppm/.ixx/.ccm` |
-| 1.5 | Java language support | DONE | Java lang registration, NowJava POM section, Maven layout defaults |
-| 1.6 | Additional languages | TODO | Rust FFI, mixed C/C++ with Go |
+## Pasta Ecosystem
 
----
+| # | Item | Status |
+|---|------|--------|
+| P.1 | Pasta v0.2 | DONE |
+| P.2 | Alforno layer system | DONE |
+| P.3 | `now fmt` via pasta write | DONE |
+| P.4 | Basta packages | DONE |
+| P.5 | Alforno templates | DONE |
 
-## Pasta Ecosystem Integration
+## Tier 2 — Hardening
 
-New libraries from the Pasta team unlock significant simplification and
-new capabilities across `now`.
-
-| # | Item | Library | Status | Impact |
-|---|------|---------|--------|--------|
-| P.1 | Update pasta submodule to v0.2 | pasta | DONE | `PASTA_LABEL`, `PASTA_SORTED`, section references |
-| P.2 | Wire alforno into layer system | alforno | DONE | Vendored alforno sources, `alf_value_clone` + `alf_map_merge` in layer merge, 4 integration tests |
-| P.3 | `now fmt` via pasta write | pasta | DONE | Parse → write with `PASTA_PRETTY \| PASTA_SORTED` — near one-liner |
-| P.4 | Basta package format | basta | DONE | Single-file .basta packages with embedded blobs, replaces tar.gz + sidecar |
-| P.5 | Alforno for `now init` templates | alforno | DONE | Parameterized project scaffolding via `@vars` + aggregate pipeline |
-
-### Pasta ecosystem repos
-
-- **Pasta** — serialization format, MIT. `PASTA_LABEL`, `PASTA_SORTED`, section refs. [github.com/IridiumFX/Pasta](https://github.com/IridiumFX/Pasta)
-- **Basta** — Pasta + binary blobs (`BASTA_BLOB`: 0x00 sentinel + u64be length + raw bytes). [github.com/IridiumFX/basta](https://github.com/IridiumFX/basta)
-- **Alforno** — Pasta processor. Three-pass pipeline (parameterize → merge → link). Aggregate and conflate operations. `@vars` substitution, section linking. [github.com/IridiumFX/alforno](https://github.com/IridiumFX/alforno)
-
----
-
-## Tier 2 — Now Team Hardening
-
-Prepare for growth. Solidify internals, reduce maintenance burden, be
-ready for surging adoption.
-
-| # | Item | Rationale |
-|---|------|-----------|
-| 2.1 | ~~Native Ed25519~~ | **DONE** — `now_ed25519.c`: SHA-512, GF(2^255-19), keypair/sign/verify/file-verify, 7 tests |
-| 2.2 | ~~pico_http TLS hardening~~ | **DONE** — `VERIFY_REQUIRED` default, system CA loading (Windows+POSIX), `tls_noverify`/`ca_file`/`ca_data` options, pico_ws wired |
-| 2.3 | ~~Build caching~~ | **DONE** — Content-addressable object cache at `~/.now/cache/objects/`, SHA-256 key, two-level sharding, integrated into build phase, `now cache:clean/stats` CLI. Header-aware: compiler depfiles (`-MD -MF` / `/showIncludes`), ccache-style two-level key (source_key → .deps sidecar → result_key), manifest tracks dep hashes |
-| 2.4 | ~~`export:meson` / `export:bazel`~~ | **DONE** — `now export:meson` (meson.build) + `now export:bazel` (BUILD.bazel), 9 tests |
-| 2.5 | ~~Plugin registry~~ | **DONE** — `now plugin:list/search/install/info`, manifest parsing, external plugin invocation via stdin/stdout Pasta IPC, 10 tests |
-
----
+| # | Item | Status |
+|---|------|--------|
+| 2.1 | Native Ed25519 | DONE — SHA-512, GF(2^255-19), sign/verify |
+| 2.2 | TLS hardening | DONE — VERIFY_REQUIRED, system CA, pico_ws |
+| 2.3 | Build caching | DONE — SHA-256, two-level sharding, header-aware |
+| 2.4 | Export: meson/bazel | DONE — 9 tests |
+| 2.5 | Plugin registry | DONE — list/search/install/info |
 
 ## Tier 3 — Enterprise
 
-Pays the bills. Features that large organizations require before
-adopting a build tool.
+| # | Item | Status |
+|---|------|--------|
+| 3.1 | Maven import/export | DONE — pom.xml roundtrip |
+| 3.2 | Remote build cache | DONE — HTTP GET/PUT, circuit breaker, graph cache client |
+| 3.3 | SBOM generation | DONE — CycloneDX 1.5 JSON |
+| 3.4 | LDAP/SSO auth | DONE — token/LDAP/OIDC, device code flow |
+| 3.5 | Audit logging | DONE — pasta format, matches cookbook server |
 
-| # | Item | Rationale |
-|---|------|-----------|
-| 3.1 | Maven import/export | DONE — `now export:maven` + `now import:maven`, mini XML parser, roundtrip pom.xml ↔ now.pasta |
-| 3.2 | Distributed/remote build | DONE (Part A) — Remote object cache: `GET/PUT /objects/{key}`, config in `~/.now/config.pasta`, integrated into build loop, `now cache:remote-stats` |
-| 3.3 | SBOM generation | DONE — `now sbom` generates CycloneDX 1.5 JSON, lock file + declared deps, purl, SHA-256 hashes, dependency graph |
-| 3.4 | LDAP/SSO auth for registries | DONE — Token/LDAP/OIDC auth methods, token caching with TTL, registry discovery, device code + client credentials flows, `auth:login/status/logout` CLI |
-| 3.5 | Audit logging | DONE — Client-side audit trail at `~/.now/audit.pasta`, event types: build/publish/yank/procure/auth/verify/advisory, `now audit:show` CLI with filtering, config in `~/.now/config.pasta` audit section, matches cookbook server-side format |
-
----
-
-## Tier 4 — Nice to Have
+## Tier 4 — Polish
 
 | Item | Status |
 |------|--------|
-| `export:bazel` | DONE (Tier 2) |
-| WebSocket permessage-deflate | DONE — apennines Deflate, RFC 7692 |
-| HTTP/2 in pico_http | DONE — HPACK, frame codec, ALPN negotiation |
-| `now watch` | DONE — fwatch backend, debounce, project reload |
-| TUI dashboard | DONE — `--tui` flag, live progress bar, color-coded |
-| Additional languages (1.6) | TODO — Rust FFI, Go |
+| WebSocket permessage-deflate | DONE — RFC 7692 |
+| HTTP/2 in pico_http | DONE — HPACK, frame codec, ALPN |
+| `now watch` | DONE — fwatch backend, debounce |
+| TUI dashboard | DONE — `--tui`, live progress bar |
 
 ---
 
-## Self-hosting Milestone
+## Languages Supported
 
-`now` builds itself from `now.pasta` using a bootstrap binary.
-41 source files, 4-way parallel, ~23s clean / <1s no-op.
-Cold build performance: fixed IPv6 connect timeout + remote cache circuit breaker.
+C, C++ (including C++20 modules), asm-gas, asm-nasm, Java, Rust (FFI), Go (cgo), Julia (embedding).
 
----
+## Self-hosting
 
-## Current Sprint
+`now` builds itself from `now.pasta`. 46 source files, 4-way parallel.
+313 tests, all passing. Two HTTP backends: native (pico_http + mbedTLS) or apennines (TLS 1.3 + HTTP/2).
 
-```
-Tier 1 complete (1.1-1.5). Pasta ecosystem (P.1-P.3, P.5) complete.
-Tier 2 complete (2.1-2.5). Tier 3 complete (3.1-3.5).
-```
+## Dependencies
 
-Self-hosting is done. Java + Maven interop bridges the enterprise world.
-Enterprise auth (LDAP/SSO/OIDC) enables corporate registry integration.
+- **Pasta** — serialization format (submodule)
+- **Basta** — Pasta + binary blobs (submodule)
+- **Alforno** — Pasta processor (vendored)
+- **Apennines** — fwatch, compress, optional HTTPS stack (vendored)
+- **Cookbook** — registry server (external, 619 tests)
