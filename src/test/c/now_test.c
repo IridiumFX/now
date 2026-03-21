@@ -994,6 +994,29 @@ static void test_audit_record_and_show(void) {
     PASS();
 }
 
+/* ---- Rust FFI ---- */
+
+static void test_rust_lang_registered(void) {
+    TEST("rust: language registered");
+    const NowLangDef *lang = now_lang_find("rust");
+    ASSERT_NOT_NULL(lang);
+    ASSERT_STR(lang->id, "rust");
+    ASSERT_STR(lang->name, "Rust");
+    PASS();
+}
+
+static void test_rust_classify_rs(void) {
+    TEST("rust: classify .rs as rust-source");
+    const char *langs[] = { "rust", NULL };
+    const NowLangDef *lang = NULL;
+    const NowLangType *type = now_lang_classify("test.rs", langs, 1, &lang);
+    ASSERT_NOT_NULL(type);
+    ASSERT_STR(type->id, "rust-source");
+    ASSERT_EQ(type->role, NOW_ROLE_SOURCE);
+    ASSERT_STR(type->tool_var, "${rustc}");
+    PASS();
+}
+
 /* ---- HTTP/2 ---- */
 
 #if defined(PICO_HTTP_TLS) && !defined(PICO_HTTP_APENNINES)
@@ -6452,6 +6475,10 @@ int main(void) {
     test_watch_diff_source_change();
     test_watch_diff_pasta_change();
     test_watch_snapshot_free_null();
+
+    printf("\n  Rust FFI:\n");
+    test_rust_lang_registered();
+    test_rust_classify_rs();
 
     printf("\n  Audit logging:\n");
     test_audit_config_parse_full();

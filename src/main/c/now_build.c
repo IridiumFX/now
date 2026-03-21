@@ -427,11 +427,16 @@ static void ensure_tool_dir_in_path(const char *tool_path) {
 #endif
 
 /* Check if Java is an active language in the project */
-static int has_java_lang(const NowProject *p) {
+static int has_lang(const NowProject *p, const char *lang_id) {
+    if (!p || !lang_id) return 0;
     for (size_t i = 0; i < p->langs.count; i++) {
-        if (strcmp(p->langs.items[i], "java") == 0) return 1;
+        if (strcmp(p->langs.items[i], lang_id) == 0) return 1;
     }
     return 0;
+}
+
+static int has_java_lang(const NowProject *p) {
+    return has_lang(p, "java");
 }
 
 NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
@@ -470,6 +475,10 @@ NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
         tc->jar   = resolve_tool("JAR",   "jar");
         tc->java  = resolve_tool("JAVA",  "java");
     }
+
+    /* Rust — resolve rustc for mixed C/Rust projects */
+    if (has_lang(p, "rust"))
+        tc->rustc = resolve_tool("RUSTC", "rustc");
 }
 
 NOW_API void now_toolchain_free(NowToolchain *tc) {
@@ -481,6 +490,7 @@ NOW_API void now_toolchain_free(NowToolchain *tc) {
     free(tc->javac);
     free(tc->jar);
     free(tc->java);
+    free(tc->rustc);
     memset(tc, 0, sizeof(*tc));
 }
 
@@ -813,6 +823,75 @@ static int build_compile_job_msvc(NowBuildCtx *ctx, const char *src_rel,
 
 /* Build the argument list for compiling one source file (GCC/Clang).
  * Returns 0 on success, fills job with owned copies of all strings. */
+/* ---- Rust compile job ---- */
+
+static int build_compile_job_rust(NowBuildCtx *ctx, const char *src_rel,
+                                    const NowLangType *type, const NowLangDef *lang,
+                                    NowCompileJob *job) {
+    const NowProject *p = ctx->project;
+    const char *basedir = ctx->basedir;
+    (void)type;
+    memset(job, 0, sizeof(*job));
+
+    const char *rustc = ctx->toolchain.rustc;
+    if (!rustc) return -1;
+
+    /* Object output path */
+    char *obj = now_obj_path(basedir, src_rel, p->sources.dir, ctx->target_dir);
+    if (!obj) return -1;
+
+    /* Ensure object directory exists */
+    char *obj_dir = strdup(obj);
+    char *sep = strrchr(obj_dir, '/');
+    if (!sep) sep = strrchr(obj_dir, '\\');
+    if (sep) { *sep = '\0'; now_mkdir_p(obj_dir); }
+    free(obj_dir);
+
+    /* Full source path */
+    char *src_full = now_path_join(basedir, src_rel);
+    if (!src_full) { free(obj); return -1; }
+
+    /* Build argv: rustc --emit obj --crate-type staticlib --edition XXXX -o obj src */
+    const char *tmp_argv[32];
+    int tmp_argc = 0;
+
+    tmp_argv[tmp_argc++] = rustc;
+    tmp_argv[tmp_argc++] = "--crate-type";
+    tmp_argv[tmp_argc++] = "staticlib";
+
+    /* Edition (default 2021) */
+    char edition_buf[32] = {0};
+    const char *std = p->compile.std ? p->compile.std : p->std;
+    if (std && (strcmp(std, "2015") == 0 || strcmp(std, "2018") == 0 ||
+                strcmp(std, "2021") == 0 || strcmp(std, "2024") == 0)) {
+        snprintf(edition_buf, sizeof(edition_buf), "%s", std);
+    } else {
+        snprintf(edition_buf, sizeof(edition_buf), "2021");
+    }
+    tmp_argv[tmp_argc++] = "--edition";
+    tmp_argv[tmp_argc++] = edition_buf;
+
+    tmp_argv[tmp_argc++] = "-o";
+    tmp_argv[tmp_argc++] = obj;
+    tmp_argv[tmp_argc++] = src_full;
+    tmp_argv[tmp_argc] = NULL;
+
+    /* Copy to job */
+    job->argv = (char **)malloc((tmp_argc + 1) * sizeof(char *));
+    if (!job->argv) { free(obj); free(src_full); return -1; }
+    for (int i = 0; i < tmp_argc; i++)
+        job->argv[i] = strdup(tmp_argv[i]);
+    job->argv[tmp_argc] = NULL;
+    job->argc = tmp_argc;
+    job->src_rel = strdup(src_rel);
+    job->obj_path = obj;
+
+    free(src_full);
+    return 0;
+}
+
+/* ---- GCC/Clang compile job ---- */
+
 static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
                              const NowLangType *type, const NowLangDef *lang,
                              NowCompileJob *job) {
@@ -1680,7 +1759,9 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         }
 
         int jrc;
-        if (ctx->toolchain.is_msvc)
+        if (type->tool_var && strcmp(type->tool_var, "${rustc}") == 0)
+            jrc = build_compile_job_rust(ctx, src, type, lang, &jobs[njobs]);
+        else if (ctx->toolchain.is_msvc)
             jrc = build_compile_job_msvc(ctx, src, type, lang, &jobs[njobs]);
         else
             jrc = build_compile_job(ctx, src, type, lang, &jobs[njobs]);
@@ -2417,6 +2498,20 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
                     argv[argc++] = lib_bufs[nlib];
                     nlib++;
                 }
+            }
+
+            /* Rust stdlib deps (auto-injected when Rust sources present) */
+            if (ctx->toolchain.rustc) {
+#ifdef _WIN32
+                argv[argc++] = "-lws2_32";
+                argv[argc++] = "-luserenv";
+                argv[argc++] = "-lbcrypt";
+                argv[argc++] = "-lntdll";
+#else
+                argv[argc++] = "-ldl";
+                argv[argc++] = "-lpthread";
+                argv[argc++] = "-lm";
+#endif
             }
 
             /* Dependency libraries (from procure) */

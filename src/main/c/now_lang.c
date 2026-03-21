@@ -183,6 +183,28 @@ static const NowLangDef lang_java = {
     .type_count = sizeof(java_types) / sizeof(java_types[0])
 };
 
+/* Rust language */
+static const char *rust_source_exts[] = { ".rs", NULL };
+
+static const NowLangType rust_types[] = {
+    {
+        .id         = "rust-source",
+        .extensions = rust_source_exts,
+        .role       = NOW_ROLE_SOURCE,
+        .tool_var   = "${rustc}",
+        .produces   = NOW_PRODUCES_OBJECT,
+        .output_ext = ".rs.a"
+    }
+};
+
+static const NowLangDef lang_rust = {
+    .id         = "rust",
+    .name       = "Rust",
+    .std_flag   = "--edition ${std}",
+    .types      = rust_types,
+    .type_count = sizeof(rust_types) / sizeof(rust_types[0])
+};
+
 /* ---- Registry ---- */
 
 static const NowLangDef *registry[] = {
@@ -191,6 +213,7 @@ static const NowLangDef *registry[] = {
     &lang_gas,
     &lang_nasm,
     &lang_java,
+    &lang_rust,
     NULL
 };
 

@@ -1,0 +1,19 @@
+{
+  group:    "dev.iridium",
+  artifact: "rustffi-test",
+  version:  "0.1.0",
+  langs:    ["c", "rust"],
+
+  sources: {
+    dir: "src/main/c",
+    headers: "src/main/h"
+  },
+
+  compile: {
+    warnings: ["Wall"]
+  },
+
+  link: {
+    output: "executable"
+  }
+}

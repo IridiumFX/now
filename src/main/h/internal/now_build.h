@@ -22,6 +22,7 @@ typedef struct {
     char *javac;   /* Java compiler */
     char *jar;     /* JAR tool */
     char *java;    /* Java runtime */
+    char *rustc;   /* Rust compiler */
 } NowToolchain;
 
 /* Initialize toolchain from environment / defaults */
