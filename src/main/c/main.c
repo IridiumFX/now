@@ -34,6 +34,7 @@
 #include "now_cache.h"
 #include "now_audit.h"
 #include "now_watch.h"
+#include "now_tui.h"
 #include "pasta.h"
 #include "alforno.h"
 
@@ -203,6 +204,7 @@ static void usage(void) {
         "  --locked        Fail if lock file is inconsistent\n"
         "  --offline       No network access\n"
         "  --target TRIPLE Target platform triple (os:arch:variant)\n"
+        "  --tui           Live progress display\n"
         "  --no-color      Disable ANSI colors\n"
         "  -h              Show this help\n",
         now_version());
@@ -235,6 +237,7 @@ int main(int argc, char *argv[]) {
     int flag_locked = 0;
     int flag_offline = 0;
     int flag_no_color = 0;
+    int flag_tui = 0;
     const char *target_str = NULL;
 
     /* Check for flags in remaining args */
@@ -255,6 +258,8 @@ int main(int argc, char *argv[]) {
             flag_offline = 1;
         else if (strcmp(argv[i], "--no-color") == 0)
             flag_no_color = 1;
+        else if (strcmp(argv[i], "--tui") == 0)
+            flag_tui = 1;
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
             target_str = argv[++i];
         else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
