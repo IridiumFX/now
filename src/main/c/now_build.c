@@ -1741,6 +1741,21 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     for (size_t i = 0; i < ctx->sources.count; i++) {
         const char *src = ctx->sources.paths[i];
 
+        /* Check exclude list */
+        int excluded = 0;
+        for (size_t ex = 0; ex < p->sources.exclude.count; ex++) {
+            const char *pat = p->sources.exclude.items[ex];
+            /* Match by basename or full relative path */
+            const char *basename = strrchr(src, '/');
+            if (!basename) basename = strrchr(src, '\\');
+            if (basename) basename++; else basename = src;
+            if (strcmp(src, pat) == 0 || strcmp(basename, pat) == 0) {
+                excluded = 1;
+                break;
+            }
+        }
+        if (excluded) continue;
+
         const NowLangDef *lang = NULL;
         const NowLangType *type = now_lang_classify(
             src, (const char *const *)p->langs.items, p->langs.count, &lang);
@@ -2548,6 +2563,12 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             /* Dependency library directories (from procure) */
             for (size_t i = 0; i < ctx->dep_libdirs.count; i++)
                 argv[argc++] = ctx->dep_libdirs.paths[i];
+
+            /* Pre-built static archives (full paths) */
+            for (size_t i = 0; i < p->link.archives.count; i++) {
+                char *arc = now_path_join(basedir, p->link.archives.items[i]);
+                if (arc) argv[argc++] = arc;
+            }
 
             /* Libraries: -l prepended */
             char *lib_bufs[64];

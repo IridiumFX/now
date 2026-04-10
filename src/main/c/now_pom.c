@@ -195,6 +195,7 @@ static void load_link(NowLink *dst, const PastaValue *src) {
     load_strarray(&dst->flags,   pasta_map_get(src, "flags"));
     load_strarray(&dst->libs,    pasta_map_get(src, "libs"));
     load_strarray(&dst->libdirs, pasta_map_get(src, "libdirs"));
+    load_strarray(&dst->archives, pasta_map_get(src, "archives"));
     dst->script      = dup_map_str(src, "script");
     dst->script_body = dup_map_str(src, "script_body");
 }
@@ -329,12 +330,14 @@ static void now_link_init(NowLink *l) {
     now_strarray_init(&l->flags);
     now_strarray_init(&l->libs);
     now_strarray_init(&l->libdirs);
+    now_strarray_init(&l->archives);
 }
 
 static void now_link_free(NowLink *l) {
     now_strarray_free(&l->flags);
     now_strarray_free(&l->libs);
     now_strarray_free(&l->libdirs);
+    now_strarray_free(&l->archives);
     free(l->script);
     free(l->script_body);
 }

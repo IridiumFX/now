@@ -46,6 +46,7 @@ typedef struct {
     NowStrArray flags;
     NowStrArray libs;
     NowStrArray libdirs;
+    NowStrArray archives;  /* pre-built static archives (.a/.lib) */
     char *script;          /* linker script path */
     char *script_body;     /* inline linker script (multiline) */
 } NowLink;
