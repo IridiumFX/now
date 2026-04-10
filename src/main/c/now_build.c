@@ -200,7 +200,7 @@ static int spawn_captured(const char *const *argv, NowWorkerSlot *slot) {
     sa.lpSecurityDescriptor = NULL;
 
     HANDLE hRead, hWrite;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+    if (!CreatePipe(&hRead, &hWrite, &sa, 1024 * 1024)) {  /* 1MB pipe buffer */
         free(cmdline);
         return -1;
     }
@@ -277,7 +277,28 @@ static int wait_any_worker(NowWorkerSlot *slots, int nslots,
     }
     if (nactive == 0) return -1;
 
-    DWORD which = WaitForMultipleObjects((DWORD)nactive, handles, FALSE, INFINITE);
+    DWORD which = WaitForMultipleObjects((DWORD)nactive, handles, FALSE, 100);
+
+    /* While waiting, drain pipes to prevent deadlock on full buffers.
+     * GCC with many warnings can fill the 4KB Windows pipe buffer,
+     * blocking the child process and causing WaitForMultipleObjects
+     * to hang forever. */
+    if (which == WAIT_TIMEOUT) {
+        /* Drain all active pipes (non-blocking peek + read) */
+        for (int i = 0; i < nslots; i++) {
+            if (!slots[i].active) continue;
+            DWORD avail = 0;
+            while (PeekNamedPipe(slots[i].hPipeRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+                char drain[4096];
+                DWORD got = 0;
+                ReadFile(slots[i].hPipeRead, drain, sizeof(drain), &got, NULL);
+                /* discard — we'll read the rest after process exits */
+            }
+        }
+        /* Retry wait */
+        which = WaitForMultipleObjects((DWORD)nactive, handles, FALSE, INFINITE);
+    }
+
     if (which < WAIT_OBJECT_0 || which >= WAIT_OBJECT_0 + (DWORD)nactive)
         return -1;
 
