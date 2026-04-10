@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: now-linux-x64
+            cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+          - os: macos-latest
+            asset: now-macos-arm64
+            cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+          - os: windows-latest
+            asset: now-windows-x64.exe
+            cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+          - os: ubuntu-latest
+            asset: now-freebsd-x64
+            skip: true  # FreeBSD via vmactions in separate job
+
+    runs-on: ${{ matrix.os }}
+    if: ${{ !matrix.skip }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -B build -G "Unix Makefiles" ${{ matrix.cmake_flags }}
+
+      - name: Build
+        run: cmake --build build --target now_cli -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+      - name: Test
+        run: ./build/bin/now_test || build/bin/now_test.exe
+        continue-on-error: false
+
+      - name: Package binary
+        shell: bash
+        run: |
+          if [ -f build/bin/now.exe ]; then
+            cp build/bin/now.exe ${{ matrix.asset }}
+          else
+            cp build/bin/now ${{ matrix.asset }}
+          fi
+          ls -la ${{ matrix.asset }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y cmake ninja gcc
+          run: |
+            cmake -B build -G "Unix Makefiles" -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --target now_cli -j$(sysctl -n hw.ncpu)
+            cp build/bin/now now-freebsd-x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: now-freebsd-x64
+          path: now-freebsd-x64
+
+  release:
+    needs: [build, freebsd]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/now-linux-x64/now-linux-x64
+            artifacts/now-macos-arm64/now-macos-arm64
+            artifacts/now-windows-x64.exe/now-windows-x64.exe
+            artifacts/now-freebsd-x64/now-freebsd-x64
+          generate_release_notes: true

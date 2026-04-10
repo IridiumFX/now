@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+          - os: macos-latest
+            cc: clang
+          - os: windows-latest
+            cc: gcc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug
+        env:
+          CC: ${{ matrix.cc }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+      - name: Test
+        run: |
+          if [ -f build/bin/now_test ]; then
+            ./build/bin/now_test
+          else
+            build/bin/now_test.exe
+          fi
+        shell: bash
+
+      - name: Self-build
+        run: |
+          if [ -f build/bin/now ]; then
+            ./build/bin/now build
+          else
+            build/bin/now.exe build
+          fi
+        shell: bash
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build and test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y cmake ninja gcc
+          run: |
+            cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build -j$(sysctl -n hw.ncpu)
+            ./build/bin/now_test
