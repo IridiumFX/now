@@ -53,9 +53,9 @@ add_library(now
     enterprise/src/main/c/now_repro.c
     enterprise/src/main/c/now_advisory.c
     enterprise/src/main/c/now_sbom.c
-    # now-export module
-    export/src/main/c/now_export.c
-    export/src/main/c/now_maven.c
+    # now-export module (nested: buildtools + maven)
+    export/buildtools/src/main/c/now_export.c
+    export/maven/src/main/c/now_maven.c
     # now-plugins module
     plugins/src/main/c/now_plugin.c
     plugins/src/main/c/now_plugin_registry.c
@@ -123,7 +123,7 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
-            ${CMAKE_SOURCE_DIR}/export/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
@@ -183,7 +183,7 @@ target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
     ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
     ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
-    ${CMAKE_SOURCE_DIR}/export/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
 )
@@ -202,7 +202,7 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
-        ${CMAKE_SOURCE_DIR}/export/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
     )

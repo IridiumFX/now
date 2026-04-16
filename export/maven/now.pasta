@@ -1,0 +1,5 @@
+{
+  artifact: "now-export-maven",
+  lang: "c",
+  sources: { dir: "src/main/c" }
+}
