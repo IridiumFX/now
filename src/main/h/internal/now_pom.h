@@ -172,7 +172,10 @@ struct NowProject {
     /* Java-specific (when langs includes "java") */
     NowJava java;
 
-    /* Vendored subprojects — auto-discovered sources + headers */
+    /* Components — your own submodules (full control) */
+    NowStrArray components;
+
+    /* Vendored — external deps (read-only, sources discovered) */
     NowStrArray vendored;
 
     /* Workspace (§1.11) */

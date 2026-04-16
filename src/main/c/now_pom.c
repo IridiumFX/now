@@ -353,6 +353,7 @@ NOW_API NowProject *now_project_new(void) {
     now_deparray_init(&p->deps);
     now_repoarray_init(&p->repos);
     now_pluginarray_init(&p->plugins);
+    now_strarray_init(&p->components);
     now_strarray_init(&p->vendored);
     now_strarray_init(&p->modules);
     now_strarray_init(&p->private_groups);
@@ -381,6 +382,7 @@ NOW_API void now_project_free(NowProject *p) {
     now_repoarray_free(&p->repos);
     now_pluginarray_free(&p->plugins);
     free(p->convergence);
+    now_strarray_free(&p->components);
     now_strarray_free(&p->vendored);
     now_strarray_free(&p->private_groups);
     now_strarray_free(&p->modules);
@@ -499,7 +501,8 @@ NOW_API NowProject *now_project_load(const char *path, NowResult *result) {
     /* Dep confusion protection (§8) */
     load_strarray(&p->private_groups, pasta_map_get(root, "private_groups"));
 
-    /* Vendored subprojects */
+    /* Components (own modules) and vendored (external deps) */
+    load_strarray(&p->components, pasta_map_get(root, "components"));
     load_strarray(&p->vendored, pasta_map_get(root, "vendored"));
 
     /* Modules (§1.11) */
@@ -603,6 +606,7 @@ NOW_API NowProject *now_project_load_string(const char *input, size_t len,
     p->convergence = dup_map_str(root, "convergence");
     load_plugins(&p->plugins, pasta_map_get(root, "plugins"));
     load_strarray(&p->private_groups, pasta_map_get(root, "private_groups"));
+    load_strarray(&p->components, pasta_map_get(root, "components"));
     load_strarray(&p->vendored, pasta_map_get(root, "vendored"));
     load_strarray(&p->modules, pasta_map_get(root, "modules"));
 

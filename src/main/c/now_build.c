@@ -598,7 +598,10 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                     if (inc) { push_include(&ctx->dep_includes, inc); free(inc); }
                 }
 
-                /* Recurse on module's own vendored deps */
+                /* Recurse on module's own components and vendored deps */
+                if (mp->components.count > 0)
+                    resolve_modules(ctx, mod_abs, mp->components.items,
+                                     mp->components.count, exts, depth + 1);
                 if (mp->vendored.count > 0) {
                     resolve_modules(ctx, mod_abs, mp->vendored.items,
                                      mp->vendored.count, exts, depth + 1);
@@ -719,7 +722,9 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     for (size_t i = 0; i < project->sources.include.count; i++)
         now_filelist_push(&ctx->sources, project->sources.include.items[i]);
 
-    /* Resolve vendored modules — discover sources + inject include paths */
+    /* Resolve components (own modules) and vendored (external deps) */
+    resolve_modules(ctx, basedir, project->components.items, project->components.count,
+                     exts, 0);
     resolve_modules(ctx, basedir, project->vendored.items, project->vendored.count,
                      exts, 0);
     free(exts);

@@ -12,17 +12,20 @@
     private: "src/main/h/internal"
   },
 
+  components: [
+    "enterprise",
+    "export",
+    "plugins",
+    "crypto",
+    "cli"
+  ],
+
   vendored: [
     "lib/pasta",
     "lib/alforno",
     "lib/basta",
     "lib/apennines",
-    "lib/pico_http",
-    "lib/now-enterprise",
-    "lib/now-export",
-    "lib/now-plugins",
-    "lib/now-crypto",
-    "lib/now-cli"
+    "lib/pico_http"
   ],
 
   compile: {
