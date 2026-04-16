@@ -309,7 +309,14 @@
       "Bash(rm -f components/export/make/now.pasta)",
       "Bash(rm -f components/export/meson/now.pasta)",
       "Bash(awk '/^static void resolve_modules/{found=1} found{depth+=gsub\\(/{/,\"{\"\\); depth-=gsub\\(/}/,\"}\"\\); if\\(depth==0 && found>1\\){print NR\": }\"; found=0}} found{found++}' src/main/c/now_build.c)",
-      "Bash(awk 'BEGIN{d=0} /^static void resolve_modules/{start=NR} start{d+=gsub\\(/{/,\"{\"\\); d-=gsub\\(/}/,\"}\"\\); if\\(NR>start && d<=0\\){print \"closes at line \"NR\" depth \"d; exit}}' src/main/c/now_build.c)"
+      "Bash(awk 'BEGIN{d=0} /^static void resolve_modules/{start=NR} start{d+=gsub\\(/{/,\"{\"\\); d-=gsub\\(/}/,\"}\"\\); if\\(NR>start && d<=0\\){print \"closes at line \"NR\" depth \"d; exit}}' src/main/c/now_build.c)",
+      "Bash(mkdir -p /tmp/cmake_test)",
+      "Bash(./build/default/bin/now.exe import:cmake --file CMakeLists.txt)",
+      "Bash(cat /tmp/cmake_test/now.pasta)",
+      "Bash(cat now.pasta.imported)",
+      "Bash(mkdir -p /tmp/import_test)",
+      "Bash(cp C:/Users/Iridium/projects/now/CMakeLists.txt /tmp/import_test/)",
+      "Bash(C:/Users/Iridium/projects/now/build/default/bin/now.exe import:cmake)"
     ]
   }
 }

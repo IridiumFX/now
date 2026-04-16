@@ -176,6 +176,7 @@ static void usage(void) {
         "  export:meson  Generate meson.build from now.pasta\n"
         "  export:bazel  Generate BUILD.bazel from now.pasta\n"
         "  export:maven  Generate pom.xml from now.pasta\n"
+        "  import:cmake  Convert CMakeLists.txt to now.pasta\n"
         "  import:maven  Convert pom.xml to now.pasta\n"
         "  plugin:list   List installed plugins\n"
         "  plugin:search Search for plugins by keyword\n"
@@ -981,6 +982,32 @@ skip_header:
     }
 
     /* import:maven doesn't need an existing now.pasta */
+    if (strcmp(phase, "import:cmake") == 0) {
+        const char *cmake_file = "CMakeLists.txt";
+        for (int a = 2; a < argc - 1; a++) {
+            if (strcmp(argv[a], "--file") == 0) { cmake_file = argv[a + 1]; break; }
+        }
+        char *cmake_path = now_path_join(cwd, cmake_file);
+        NowResult result;
+        memset(&result, 0, sizeof(result));
+        char *out_path = now_path_join(cwd, "now.pasta");
+        if (now_path_exists(out_path)) {
+            fprintf(stderr, "now.pasta already exists — use --force to overwrite\n");
+            free(cmake_path); free(out_path);
+            return 1;
+        }
+        int rc = now_import_cmake(cmake_path, out_path, &result);
+        free(cmake_path);
+        if (rc != 0) {
+            fprintf(stderr, "error: %s\n", result.message);
+            free(out_path);
+            return 1;
+        }
+        printf("Imported %s → %s\n", cmake_file, out_path);
+        free(out_path);
+        return 0;
+    }
+
     if (strcmp(phase, "import:maven") == 0) {
         const char *pom_file = "pom.xml";
         for (int a = 2; a < argc - 1; a++) {

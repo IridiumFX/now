@@ -48,4 +48,11 @@ NOW_API NowProject *now_import_maven(const char *pom_path, NowResult *result);
 NOW_API int now_import_maven_write(const NowProject *project,
                                      const char *outpath, NowResult *result);
 
+/* Parse a CMakeLists.txt and generate now.pasta.
+ * cmake_path: input CMakeLists.txt path.
+ * out_path: output now.pasta path.
+ * Returns 0 on success. */
+NOW_API int now_import_cmake(const char *cmake_path, const char *out_path,
+                               NowResult *result);
+
 #endif /* NOW_EXPORT_H */

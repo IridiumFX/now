@@ -56,6 +56,7 @@ add_library(now
     components/enterprise/src/main/c/now_sbom.c
     # now-export module (nested: cmake + make + meson + bazel + maven)
     components/export/cmake/src/main/c/now_export_cmake.c
+    components/export/cmake/src/main/c/now_import_cmake.c
     components/export/make/src/main/c/now_export_make.c
     components/export/meson/src/main/c/now_export_meson.c
     components/export/bazel/src/main/c/now_export_bazel.c
