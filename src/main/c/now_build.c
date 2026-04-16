@@ -527,6 +527,127 @@ NOW_API void now_toolchain_free(NowToolchain *tc) {
 
 /* ---- Build context ---- */
 
+/* Push an include path with -I prefix to dep_includes */
+static void push_include(NowFileList *dep_includes, const char *path) {
+    if (!path) return;
+    size_t len = strlen(path) + 3;
+    char *flag = (char *)malloc(len);
+    if (flag) {
+        snprintf(flag, len, "-I%s", path);
+        now_filelist_push(dep_includes, flag);
+        free(flag);
+    }
+}
+
+/* ---- Module resolution ----
+ * For each module path, check for now.pasta → use its layout.
+ * If no now.pasta, apply conventions (src/main/c, src/main/h).
+ * Recursively resolves modules declared by sub-modules.
+ * Adds sources to ctx->sources, include paths to ctx->dep_includes. */
+
+static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
+                              char **mod_paths, size_t mod_count,
+                              const char **exts, int depth) {
+    if (depth > 8) return;  /* prevent infinite recursion */
+
+    for (size_t m = 0; m < mod_count; m++) {
+        const char *mod = mod_paths[m];
+        char *mod_abs = now_path_join(basedir, mod);
+        if (!mod_abs) continue;
+
+        /* Check for now.pasta in the module directory */
+        char *mod_pasta = now_path_join(mod_abs, "now.pasta");
+        if (mod_pasta && now_path_exists(mod_pasta)) {
+            /* Module has its own descriptor — load it */
+            NowResult mr;
+            memset(&mr, 0, sizeof(mr));
+            NowProject *mp = now_project_load(mod_pasta, &mr);
+            if (mp) {
+                /* Discover module's sources */
+                const char *msrc = mp->sources.dir ? mp->sources.dir : "src/main/c";
+                NowFileList mfl;
+                now_filelist_init(&mfl);
+                if (now_discover_sources(mod_abs, msrc, exts, &mfl) == 0) {
+                    for (size_t f = 0; f < mfl.count; f++) {
+                        /* Prefix with module path for the main build */
+                        char *rel = now_path_join(mod, mfl.paths[f]);
+                        if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                    }
+                }
+                now_filelist_free(&mfl);
+
+                /* Add module's explicit includes */
+                for (size_t i = 0; i < mp->sources.include.count; i++) {
+                    char *rel = now_path_join(mod, mp->sources.include.items[i]);
+                    if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                }
+
+                /* Add module's header paths as include dirs */
+                if (mp->sources.headers) {
+                    char *hdr = now_path_join(mod_abs, mp->sources.headers);
+                    if (hdr) { push_include(&ctx->dep_includes, hdr); free(hdr); }
+                }
+                if (mp->sources.private_headers) {
+                    char *phdr = now_path_join(mod_abs, mp->sources.private_headers);
+                    if (phdr) { push_include(&ctx->dep_includes, phdr); free(phdr); }
+                }
+
+                /* Add module's compile.includes (relative to module dir) */
+                for (size_t i = 0; i < mp->compile.includes.count; i++) {
+                    char *inc = now_path_join(mod_abs, mp->compile.includes.items[i]);
+                    if (inc) { push_include(&ctx->dep_includes, inc); free(inc); }
+                }
+
+                /* Recurse on module's own vendored deps */
+                if (mp->vendored.count > 0) {
+                    resolve_modules(ctx, mod_abs, mp->vendored.items,
+                                     mp->vendored.count, exts, depth + 1);
+                }
+
+                now_project_free(mp);
+            }
+        } else {
+            /* No now.pasta — apply conventions */
+            /* Try src/main/c first, then root */
+            char *conv_src = now_path_join(mod_abs, "src/main/c");
+            const char *scan_dir = NULL;
+            if (conv_src && now_is_dir(conv_src)) {
+                scan_dir = "src/main/c";
+            } else {
+                /* Scan module root directly */
+                scan_dir = ".";
+            }
+            free(conv_src);
+
+            NowFileList mfl;
+            now_filelist_init(&mfl);
+            if (now_discover_sources(mod_abs, scan_dir, exts, &mfl) == 0) {
+                for (size_t f = 0; f < mfl.count; f++) {
+                    /* mfl.paths[f] is relative to mod_abs, already includes scan_dir prefix */
+                    char *rel = now_path_join(mod, mfl.paths[f]);
+                    if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                }
+            }
+            now_filelist_free(&mfl);
+
+            /* Convention: add src/main/h as include path if it exists */
+            char *conv_hdr = now_path_join(mod_abs, "src/main/h");
+            if (conv_hdr && now_is_dir(conv_hdr))
+                push_include(&ctx->dep_includes, conv_hdr);
+            free(conv_hdr);
+
+            /* Also add src/main/c as include path (some libs put .h in src dir) */
+            char *conv_src2 = now_path_join(mod_abs, "src/main/c");
+            if (conv_src2 && now_is_dir(conv_src2))
+                push_include(&ctx->dep_includes, conv_src2);
+            free(conv_src2);
+        }
+
+        free(mod_pasta);
+        free(mod_abs);
+    }
+}
+
 NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
                    const char *basedir, NowResult *result) {
     memset(ctx, 0, sizeof(*ctx));
@@ -583,9 +704,9 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     if (!src_dir) src_dir = "src/main/c";
 
     int rc = now_discover_sources(basedir, src_dir, exts, &ctx->sources);
-    free(exts);
 
     if (rc != 0) {
+        free(exts);
         if (result) {
             result->code = NOW_ERR_IO;
             snprintf(result->message, sizeof(result->message),
@@ -597,6 +718,11 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     /* Append explicit sources.include entries */
     for (size_t i = 0; i < project->sources.include.count; i++)
         now_filelist_push(&ctx->sources, project->sources.include.items[i]);
+
+    /* Resolve vendored modules — discover sources + inject include paths */
+    resolve_modules(ctx, basedir, project->vendored.items, project->vendored.count,
+                     exts, 0);
+    free(exts);
 
     if (ctx->sources.count == 0) {
         if (result) {

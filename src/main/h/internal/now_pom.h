@@ -172,6 +172,9 @@ struct NowProject {
     /* Java-specific (when langs includes "java") */
     NowJava java;
 
+    /* Vendored subprojects — auto-discovered sources + headers */
+    NowStrArray vendored;
+
     /* Workspace (§1.11) */
     NowStrArray modules;
 

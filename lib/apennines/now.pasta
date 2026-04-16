@@ -1,0 +1,14 @@
+{
+  artifact: "apennines",
+  lang: "c",
+  sources: {
+    dir: "src/main/c",
+    headers: "src/main/h",
+    exclude: [
+      "addr.c", "asn1_der.c", "base.c", "bigint.c", "cipher.c", "ct.c",
+      "dns.c", "ec.c", "ecdsa.c", "entropy.c", "h2.c", "hash.c",
+      "http.c", "http_client.c", "https_client.c", "pem.c", "pki.c",
+      "rsa.c", "secret.c", "tcp.c", "threadpool.c", "tls.c", "x509.c"
+    ]
+  }
+}
