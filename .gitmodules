@@ -1,6 +1,3 @@
-[submodule "lib/pasta"]
-	path = lib/pasta
-	url = https://github.com/IridiumFX/Pasta.git
 [submodule "lib/cookbook"]
 	path = lib/cookbook
 	url = https://github.com/IridiumFX/cookbook.git
