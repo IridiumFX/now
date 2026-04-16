@@ -65,6 +65,8 @@ add_library(now
     lib/alforno/src/main/c/alforno_param.c
     lib/alforno/src/main/c/alforno_merge.c
     lib/alforno/src/main/c/alforno_link.c
+    lib/alforno/src/main/c/alforno_include.c
+    lib/alforno/src/main/c/alforno_validate.c
     # Apennines (vendored — fwatch, buf, compress, optionally full HTTP stack)
     lib/apennines/src/main/c/fwatch.c
     lib/apennines/src/main/c/buf.c
