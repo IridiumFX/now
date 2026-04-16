@@ -16,7 +16,8 @@
     "lib/pasta",
     "lib/alforno",
     "lib/basta",
-    "lib/apennines"
+    "lib/apennines",
+    "lib/pico_http"
   ],
 
   compile: {

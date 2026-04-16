@@ -1,0 +1,22 @@
+{
+  group:    "dev.iridium",
+  artifact: "pico_http",
+  version:  "0.3.0",
+  lang:     "c",
+
+  sources: {
+    dir:     "src/main/c",
+    headers: "src/main/h",
+    private: "src/main/h/internal"
+  },
+
+  compile: {
+    std: "c11",
+    warnings: ["Wall", "Wextra"]
+  },
+
+  link: {
+    output: "shared",
+    libs: ["ws2_32"]
+  }
+}

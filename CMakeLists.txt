@@ -32,12 +32,12 @@ add_library(now
     src/main/c/now_manifest.c
     src/main/c/now_version.c
     src/main/c/now_resolve.c
-    src/main/c/pico_http.c
-    src/main/c/pico_transport.c
-    src/main/c/pico_http_apennines.c
-    src/main/c/pico_h2.c
+    lib/pico_http/src/main/c/pico_http.c
+    lib/pico_http/src/main/c/pico_transport.c
+    lib/pico_http/src/main/c/pico_http_apennines.c
+    lib/pico_http/src/main/c/pico_h2.c
     src/main/c/now_tui.c
-    src/main/c/pico_ws.c
+    lib/pico_http/src/main/c/pico_ws.c
     src/main/c/now_procure.c
     src/main/c/now_package.c
     src/main/c/now_workspace.c
@@ -115,6 +115,8 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
             ${CMAKE_SOURCE_DIR}/lib/apennines/src/main/h
+            ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
+            ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
 )
@@ -170,6 +172,7 @@ target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
     ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
+    ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
 )
 
 # ---- Test executable ----
@@ -183,6 +186,8 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/c
         ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
         ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
+        ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
+        ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
     )
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"
