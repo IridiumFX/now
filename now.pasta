@@ -9,7 +9,7 @@
   sources: {
     dir:     "src/main/c",
     headers: "src/main/h",
-    private: "src/main/h/internal",
+    private: "src/main/h/internal"
   },
 
   components: [
