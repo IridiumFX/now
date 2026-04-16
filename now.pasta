@@ -9,7 +9,7 @@
   sources: {
     dir:     "src/main/c",
     headers: "src/main/h",
-    private: "src/main/h/internal"
+    private: "src/main/h/internal",
   },
 
   components: [
@@ -29,6 +29,7 @@
 
   compile: {
     warnings: ["Wall", "Wextra"],
+    includes: ["lib/basta/src/main/h", "lib/basta/src/main/c"],
     defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"]
   },
 
