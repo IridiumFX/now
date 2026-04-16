@@ -546,14 +546,31 @@ static void push_include(NowFileList *dep_includes, const char *path) {
  * Adds sources to ctx->sources, include paths to ctx->dep_includes. */
 
 static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
+                              const char *parent_rel,
                               char **mod_paths, size_t mod_count,
                               const char **exts, int depth) {
     if (depth > 8) return;  /* prevent infinite recursion */
 
     for (size_t m = 0; m < mod_count; m++) {
-        const char *mod = mod_paths[m];
+        const char *mod_name = mod_paths[m];
+        /* Build project-root-relative path */
+        char *mod = parent_rel
+            ? now_path_join(parent_rel, mod_name)
+            : strdup(mod_name);
         char *mod_abs = now_path_join(basedir, mod);
-        if (!mod_abs) continue;
+        if (!mod_abs) { free(mod); continue; }
+
+        /* Dedup: skip if this module's sources were already added */
+        {
+            int already = 0;
+            size_t mlen = strlen(mod);
+            for (size_t s = 0; s < ctx->sources.count && !already; s++) {
+                if (strncmp(ctx->sources.paths[s], mod, mlen) == 0 &&
+                    (ctx->sources.paths[s][mlen] == '/' || ctx->sources.paths[s][mlen] == '\\'))
+                    already = 1;
+            }
+            if (already) { free(mod_abs); free(mod); continue; }
+        }
 
         /* Check for now.pasta in the module directory */
         char *mod_pasta = now_path_join(mod_abs, "now.pasta");
@@ -600,10 +617,12 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
 
                 /* Recurse on module's own components and vendored deps */
                 if (mp->components.count > 0)
-                    resolve_modules(ctx, mod_abs, mp->components.items,
+                    resolve_modules(ctx, ctx->basedir, mod,
+                                     mp->components.items,
                                      mp->components.count, exts, depth + 1);
                 if (mp->vendored.count > 0) {
-                    resolve_modules(ctx, mod_abs, mp->vendored.items,
+                    resolve_modules(ctx, ctx->basedir, mod,
+                                     mp->vendored.items,
                                      mp->vendored.count, exts, depth + 1);
                 }
 
@@ -648,6 +667,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
 
         free(mod_pasta);
         free(mod_abs);
+        free(mod);
     }
 }
 
@@ -723,10 +743,10 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
         now_filelist_push(&ctx->sources, project->sources.include.items[i]);
 
     /* Resolve components (own modules) and vendored (external deps) */
-    resolve_modules(ctx, basedir, project->components.items, project->components.count,
-                     exts, 0);
-    resolve_modules(ctx, basedir, project->vendored.items, project->vendored.count,
-                     exts, 0);
+    resolve_modules(ctx, basedir, NULL,
+                     project->components.items, project->components.count, exts, 0);
+    resolve_modules(ctx, basedir, NULL,
+                     project->vendored.items, project->vendored.count, exts, 0);
     free(exts);
 
     if (ctx->sources.count == 0) {
