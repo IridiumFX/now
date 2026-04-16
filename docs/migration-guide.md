@@ -143,6 +143,95 @@ Matches by filename or relative path.
 
 ---
 
+## Safety Rules
+
+**Importers are read-only.** `now import:cmake` and `now import:maven` ONLY generate a `now.pasta` file. They never move, rename, or delete any existing files. Your project remains untouched until you decide to restructure.
+
+### The safe migration workflow
+
+```
+1. git commit                    # clean working tree first
+2. now import:cmake              # generates now.pasta (nothing else)
+3. cat now.pasta                 # review what was generated
+4. now build                     # try building — expect errors
+5. edit now.pasta                # fix what the importer missed
+6. now build                     # iterate until clean
+7. git diff                      # only now.pasta was added
+8. git commit -m "Add now.pasta" # commit when satisfied
+```
+
+**Do NOT reorganize your directory structure until the build works.** The importers generate a descriptor for your current layout. If you move files first, both CMake and `now` will break and you'll have nothing that compiles.
+
+### Restructuring (optional, do it later)
+
+Once `now build` works with your current layout:
+
+```
+1. git commit                    # clean state with working now build
+2. mkdir -p src/main/c src/main/h
+3. mv *.c src/main/c/           # move sources
+4. mv *.h src/main/h/           # move headers
+5. edit now.pasta                # remove explicit paths (convention takes over)
+6. now build                     # verify
+7. git commit                    # commit the restructure
+```
+
+Each step is independently revertable with `git checkout .`.
+
+---
+
+## Importer Limitations
+
+### `now import:cmake`
+
+**What it handles:**
+- `project(NAME VERSION X.Y.Z LANGUAGES C CXX)` → artifact, version, lang
+- `add_library(name STATIC/SHARED ...)` → output type
+- `add_executable(name ...)` → output type
+- `target_link_libraries(... lib1 lib2)` → link.libs
+- `target_compile_definitions(... DEF1 DEF2)` → compile.defines
+- `target_include_directories(... dir1 dir2)` → compile.includes
+- `add_subdirectory(lib/foo)` → vendored
+
+**What it CANNOT handle:**
+- **CMake variables** (`${VAR}`) — skipped silently. If your defines, paths, or libs use variables, they'll be missing from the output.
+- **Generator expressions** (`$<TARGET_FILE:...>`) — skipped entirely.
+- **Conditional logic** (`if/else/endif`) — the importer sees ALL commands regardless of conditions. Platform-specific libs may all appear.
+- **find_package** — no equivalent. You must manually add the library paths and names.
+- **Multiple targets** — only extracts the first `add_library` or `add_executable`. Multi-target CMake projects need one `now.pasta` per target (use workspace or components).
+- **Custom commands/targets** — `add_custom_command`, `add_custom_target` have no equivalent. These are typically code generators — use `now` plugins instead.
+- **Toolchain files** — cross-compilation settings are not imported. Use `--target` flag or profiles.
+- **FetchContent / ExternalProject** — not imported. Download deps manually and use `vendored:`.
+- **Nested CMakeLists.txt** — only reads the root file. Subdirectory CMakeLists are not parsed.
+
+**Always review the generated `now.pasta` before building.** The importer gives you a starting point, not a finished product.
+
+### `now import:maven`
+
+**What it handles:**
+- `groupId`, `artifactId`, `version` → group, artifact, version
+- `<dependencies>` with scope → deps array
+- `<properties>` → variable substitution in coordinates
+- `<build><plugins><plugin>` (maven-compiler-plugin source/target)
+
+**What it CANNOT handle:**
+- **Parent POM inheritance** — only reads the current pom.xml
+- **Maven profiles** — conditional config not imported
+- **Plugin execution** — only compiler plugin source/target extracted
+- **Multi-module reactor** — reads single POM, not the parent/child tree
+- **Repository declarations** — not imported, use `repos:` field manually
+
+### General importer advice
+
+1. **Start with a clean git tree** — you can always `git checkout .` to undo
+2. **Build with the old system first** — confirm CMake/Maven works before importing
+3. **Import generates, you curate** — the importer is 80% accurate, you fix the last 20%
+4. **Keep the old build system** — don't delete CMakeLists.txt until `now build` is fully working
+5. **Test incrementally** — get compilation working first, then linking, then tests
+6. **Platform-specific libs** — the importer may include libs from all platforms; remove the ones that don't apply
+
+---
+
 ## Migrating from CMake
 
 ### What maps where
@@ -161,8 +250,11 @@ Matches by filename or relative path.
 | `file(GLOB_RECURSE ...)` | Not needed — convention |
 | `set(CMAKE_C_STANDARD 11)` | `std: "c11"` |
 
-### What you can delete
+### What you can delete (AFTER `now build` works)
 
+**Do not delete anything until `now build` produces a working binary.**
+
+Once verified:
 - `CMakeLists.txt` (all of them)
 - `cmake/` directory
 - `.cmake` module files
@@ -170,9 +262,9 @@ Matches by filename or relative path.
 
 ### What stays
 
-- Source files (move to convention layout if needed)
-- Test files (move to `src/test/c/`)
-- Vendored libraries (move to `lib/`)
+- Source files (move to convention layout if needed, or keep as-is)
+- Test files (move to `src/test/c/` or keep in place with `tests.dir`)
+- Vendored libraries (move to `lib/` or reference with `compile.includes`)
 
 ---
 
