@@ -56,15 +56,15 @@ add_library(now
     # now-export module (nested: buildtools + maven)
     export/buildtools/src/main/c/now_export.c
     export/maven/src/main/c/now_maven.c
-    # now-plugins module
-    plugins/src/main/c/now_plugin.c
-    plugins/src/main/c/now_plugin_registry.c
-    # now-crypto module
+    # now-plugins (nested: core + registry)
+    plugins/core/src/main/c/now_plugin.c
+    plugins/registry/src/main/c/now_plugin_registry.c
+    # now-crypto
     crypto/src/main/c/now_ed25519.c
-    # now-cli module
-    cli/src/main/c/now_ci.c
-    cli/src/main/c/now_tui.c
-    cli/src/main/c/now_watch.c
+    # now-cli (nested: ci + tui + watch)
+    cli/ci/src/main/c/now_ci.c
+    cli/tui/src/main/c/now_tui.c
+    cli/watch/src/main/c/now_watch.c
     # Alforno (vendored sources — avoids FetchContent conflict with pasta)
     lib/alforno/src/main/c/alforno.c
     lib/alforno/src/main/c/alforno_param.c
@@ -124,8 +124,11 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
-            ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
-            ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/plugins/core/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/plugins/registry/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/ci/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/tui/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/watch/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
 )
@@ -174,7 +177,7 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- CLI executable ----
-add_executable(now_cli cli/src/main/c/main.c)
+add_executable(now_cli cli/app/src/main/c/main.c)
 set_target_properties(now_cli PROPERTIES OUTPUT_NAME now)
 target_link_libraries(now_cli PRIVATE now)
 target_include_directories(now_cli PRIVATE
@@ -184,8 +187,11 @@ target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
     ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
-    ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
-    ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/plugins/core/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/plugins/registry/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/cli/ci/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/tui/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/watch/src/main/h/internal
 )
 
 # ---- Test executable ----
@@ -203,8 +209,11 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/enterprise/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/export/buildtools/src/main/h/internal
-        ${CMAKE_SOURCE_DIR}/plugins/src/main/h/internal
-        ${CMAKE_SOURCE_DIR}/cli/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/plugins/core/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/plugins/registry/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/cli/ci/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/tui/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/cli/watch/src/main/h/internal
     )
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"
