@@ -34,7 +34,7 @@
   },
 
   link: {
-    libs: ["ws2_32"]
+    libs: ["ws2_32", "bcrypt"]
   },
 
   profiles: {

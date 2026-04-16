@@ -1,5 +1,0 @@
-{
-  artifact: "now-cli",
-  lang: "c",
-  components: ["app", "ci", "tui", "watch"]
-}

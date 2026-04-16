@@ -23,6 +23,7 @@
 #else
   #include <sys/wait.h>
   #include <unistd.h>
+  #include <dirent.h>
   #ifdef __APPLE__
     #include <sys/sysctl.h>
   #endif
@@ -560,16 +561,25 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
         char *mod_abs = now_path_join(basedir, mod);
         if (!mod_abs) { free(mod); continue; }
 
-        /* Dedup: skip if this module's sources were already added */
+        /* Dedup: canonicalize path then check if already resolved.
+         * Handles ../pasta vs lib/pasta resolving to the same directory. */
         {
+            static char *resolved_abs[256];
+            static int resolved_count = 0;
+            if (depth == 0 && m == 0 && parent_rel == NULL) resolved_count = 0;
+
+            char canon[1024];
+#ifdef _WIN32
+            _fullpath(canon, mod_abs, sizeof(canon));
+#else
+            if (!realpath(mod_abs, canon)) strncpy(canon, mod_abs, sizeof(canon));
+#endif
             int already = 0;
-            size_t mlen = strlen(mod);
-            for (size_t s = 0; s < ctx->sources.count && !already; s++) {
-                if (strncmp(ctx->sources.paths[s], mod, mlen) == 0 &&
-                    (ctx->sources.paths[s][mlen] == '/' || ctx->sources.paths[s][mlen] == '\\'))
-                    already = 1;
-            }
+            for (int r = 0; r < resolved_count && !already; r++)
+                if (strcmp(resolved_abs[r], canon) == 0) already = 1;
             if (already) { free(mod_abs); free(mod); continue; }
+            if (resolved_count < 256)
+                resolved_abs[resolved_count++] = strdup(canon);
         }
 
         /* Check for now.pasta in the module directory */
@@ -615,7 +625,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                     if (inc) { push_include(&ctx->dep_includes, inc); free(inc); }
                 }
 
-                /* Recurse on module's own components and vendored deps */
+                /* Recurse on explicitly declared components and vendored deps */
                 if (mp->components.count > 0)
                     resolve_modules(ctx, ctx->basedir, mod,
                                      mp->components.items,
@@ -628,41 +638,96 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
 
                 now_project_free(mp);
             }
-        } else {
-            /* No now.pasta — apply conventions */
-            /* Try src/main/c first, then root */
+        } /* end if (mod_pasta exists) */
+
+        {
+            /* Convention source discovery (when no now.pasta handled sources) */
+            int has_pasta = mod_pasta && now_path_exists(mod_pasta);
             char *conv_src = now_path_join(mod_abs, "src/main/c");
-            const char *scan_dir = NULL;
-            if (conv_src && now_is_dir(conv_src)) {
-                scan_dir = "src/main/c";
-            } else {
-                /* Scan module root directly */
-                scan_dir = ".";
-            }
+            int has_src = conv_src && now_is_dir(conv_src);
             free(conv_src);
 
-            NowFileList mfl;
-            now_filelist_init(&mfl);
-            if (now_discover_sources(mod_abs, scan_dir, exts, &mfl) == 0) {
-                for (size_t f = 0; f < mfl.count; f++) {
-                    /* mfl.paths[f] is relative to mod_abs, already includes scan_dir prefix */
-                    char *rel = now_path_join(mod, mfl.paths[f]);
-                    if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+            if (has_src && !has_pasta) {
+                /* No now.pasta + has sources — leaf module by convention */
+                NowFileList mfl;
+                now_filelist_init(&mfl);
+                if (now_discover_sources(mod_abs, "src/main/c", exts, &mfl) == 0) {
+                    for (size_t f = 0; f < mfl.count; f++) {
+                        char *rel = now_path_join(mod, mfl.paths[f]);
+                        if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                    }
                 }
+                now_filelist_free(&mfl);
+
+                /* Add include paths by convention */
+                char *conv_hdr = now_path_join(mod_abs, "src/main/h");
+                if (conv_hdr && now_is_dir(conv_hdr))
+                    push_include(&ctx->dep_includes, conv_hdr);
+                free(conv_hdr);
+
+                char *conv_hdr_int = now_path_join(mod_abs, "src/main/h/internal");
+                if (conv_hdr_int && now_is_dir(conv_hdr_int))
+                    push_include(&ctx->dep_includes, conv_hdr_int);
+                free(conv_hdr_int);
+
+                char *conv_src2 = now_path_join(mod_abs, "src/main/c");
+                if (conv_src2 && now_is_dir(conv_src2))
+                    push_include(&ctx->dep_includes, conv_src2);
+                free(conv_src2);
             }
-            now_filelist_free(&mfl);
 
-            /* Convention: add src/main/h as include path if it exists */
-            char *conv_hdr = now_path_join(mod_abs, "src/main/h");
-            if (conv_hdr && now_is_dir(conv_hdr))
-                push_include(&ctx->dep_includes, conv_hdr);
-            free(conv_hdr);
-
-            /* Also add src/main/c as include path (some libs put .h in src dir) */
-            char *conv_src2 = now_path_join(mod_abs, "src/main/c");
-            if (conv_src2 && now_is_dir(conv_src2))
-                push_include(&ctx->dep_includes, conv_src2);
-            free(conv_src2);
+            /* Auto-discover sub-components: subdirs that have src/main/c/ */
+            {
+#ifdef _WIN32
+                char pattern[1024];
+                snprintf(pattern, sizeof(pattern), "%s\\*", mod_abs);
+                WIN32_FIND_DATAA fd;
+                HANDLE hFind = FindFirstFileA(pattern, &fd);
+                if (hFind != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (fd.cFileName[0] == '.') continue;
+                        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                        char *sub_abs = now_path_join(mod_abs, fd.cFileName);
+                        char *sub_src = sub_abs ? now_path_join(sub_abs, "src/main/c") : NULL;
+                        if (sub_src && now_is_dir(sub_src)) {
+                            /* This subdir is a sub-component — recurse */
+                            char *sub_mod = now_path_join(mod, fd.cFileName);
+                            if (sub_mod) {
+                                char *sub_paths[] = { sub_mod };
+                                resolve_modules(ctx, ctx->basedir, NULL,
+                                                 sub_paths, 1, exts, depth + 1);
+                                free(sub_mod);
+                            }
+                        }
+                        free(sub_src);
+                        free(sub_abs);
+                    } while (FindNextFileA(hFind, &fd));
+                    FindClose(hFind);
+                }
+#else
+                DIR *d = opendir(mod_abs);
+                if (d) {
+                    struct dirent *entry;
+                    while ((entry = readdir(d)) != NULL) {
+                        if (entry->d_name[0] == '.') continue;
+                        char *sub_abs = now_path_join(mod_abs, entry->d_name);
+                        char *sub_src = sub_abs ? now_path_join(sub_abs, "src/main/c") : NULL;
+                        if (sub_src && now_is_dir(sub_src)) {
+                            char *sub_mod = now_path_join(mod, entry->d_name);
+                            if (sub_mod) {
+                                char *sub_paths[] = { sub_mod };
+                                resolve_modules(ctx, ctx->basedir, NULL,
+                                                 sub_paths, 1, exts, depth + 1);
+                                free(sub_mod);
+                            }
+                        }
+                        free(sub_src);
+                        free(sub_abs);
+                    }
+                    closedir(d);
+                }
+#endif
+            }
         }
 
         free(mod_pasta);

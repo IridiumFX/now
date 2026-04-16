@@ -302,7 +302,14 @@
       "Bash(sed -i '/static const char \\\\*make_opt_flag/,/^}$/d' components/export/cmake/src/main/c/now_export_cmake.c)",
       "Bash(sed -i '10r /tmp/make_helper.c' components/export/make/src/main/c/now_export_make.c)",
       "Bash(grep -A30 \"static const char \\\\*meson_opt_level\" components/export/make/src/main/c/now_export_make.c)",
-      "Bash(sed -i '/static const char \\\\*meson_opt_level/,/^}$/d; /static const char \\\\*meson_c_std/,/^}$/d; /static const char \\\\*meson_cxx_std/,/^}$/d' components/export/make/src/main/c/now_export_make.c)"
+      "Bash(sed -i '/static const char \\\\*meson_opt_level/,/^}$/d; /static const char \\\\*meson_c_std/,/^}$/d; /static const char \\\\*meson_cxx_std/,/^}$/d' components/export/make/src/main/c/now_export_make.c)",
+      "Bash(rm -f components/enterprise/now.pasta)",
+      "Bash(rm -f components/crypto/now.pasta)",
+      "Bash(rm -f components/export/cmake/now.pasta)",
+      "Bash(rm -f components/export/make/now.pasta)",
+      "Bash(rm -f components/export/meson/now.pasta)",
+      "Bash(awk '/^static void resolve_modules/{found=1} found{depth+=gsub\\(/{/,\"{\"\\); depth-=gsub\\(/}/,\"}\"\\); if\\(depth==0 && found>1\\){print NR\": }\"; found=0}} found{found++}' src/main/c/now_build.c)",
+      "Bash(awk 'BEGIN{d=0} /^static void resolve_modules/{start=NR} start{d+=gsub\\(/{/,\"{\"\\); d-=gsub\\(/}/,\"}\"\\); if\\(NR>start && d<=0\\){print \"closes at line \"NR\" depth \"d; exit}}' src/main/c/now_build.c)"
     ]
   }
 }

@@ -1,1 +1,0 @@
-{ artifact: "now-cli-ci", lang: "c", sources: { dir: "src/main/c", headers: "src/main/h/internal" } }

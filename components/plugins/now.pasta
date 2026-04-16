@@ -1,5 +1,0 @@
-{
-  artifact: "now-plugins",
-  lang: "c",
-  components: ["core", "registry"]
-}

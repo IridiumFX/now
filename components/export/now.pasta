@@ -1,6 +1,1 @@
-{
-  artifact: "now-export",
-  lang: "c",
-  sources: { headers: "src/main/h/internal" },
-  components: ["cmake", "make", "meson", "bazel", "maven"]
-}
+{ artifact: "now-export", sources: { headers: "src/main/h/internal" } }

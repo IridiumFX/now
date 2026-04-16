@@ -1,1 +1,0 @@
-{ artifact: "now-export-bazel", lang: "c", sources: { dir: "src/main/c" } }
