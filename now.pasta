@@ -13,11 +13,11 @@
   },
 
   components: [
-    "enterprise",
-    "export",
-    "plugins",
-    "crypto",
-    "cli"
+    "components/enterprise",
+    "components/export",
+    "components/plugins",
+    "components/crypto",
+    "components/cli"
   ],
 
   vendored: [
