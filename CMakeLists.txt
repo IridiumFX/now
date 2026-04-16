@@ -53,8 +53,11 @@ add_library(now
     components/enterprise/src/main/c/now_repro.c
     components/enterprise/src/main/c/now_advisory.c
     components/enterprise/src/main/c/now_sbom.c
-    # now-export module (nested: buildtools + maven)
-    components/export/buildtools/src/main/c/now_export.c
+    # now-export module (nested: cmake + make + meson + bazel + maven)
+    components/export/cmake/src/main/c/now_export_cmake.c
+    components/export/make/src/main/c/now_export_make.c
+    components/export/meson/src/main/c/now_export_meson.c
+    components/export/bazel/src/main/c/now_export_bazel.c
     components/export/maven/src/main/c/now_maven.c
     # now-plugins (nested: core + registry)
     components/plugins/core/src/main/c/now_plugin.c
@@ -123,7 +126,7 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/enterprise/src/main/h/internal
-            ${CMAKE_SOURCE_DIR}/components/export/buildtools/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/components/export/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/plugins/core/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/plugins/registry/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/cli/ci/src/main/h/internal
@@ -186,7 +189,7 @@ target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
     ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
     ${CMAKE_SOURCE_DIR}/components/enterprise/src/main/h/internal
-    ${CMAKE_SOURCE_DIR}/components/export/buildtools/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/components/export/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/components/plugins/core/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/plugins/registry/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/components/cli/ci/src/main/h/internal
@@ -208,7 +211,7 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/components/enterprise/src/main/h/internal
-        ${CMAKE_SOURCE_DIR}/components/export/buildtools/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/components/export/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/components/plugins/core/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/components/plugins/registry/src/main/h/internal
         ${CMAKE_SOURCE_DIR}/components/cli/ci/src/main/h/internal

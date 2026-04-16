@@ -297,7 +297,12 @@
       "Bash(go build:*)",
       "Bash(PATH=\"/c/Program Files/JetBrains/CLion 2025.3.3/bin/mingw/bin:$PATH\")",
       "Bash(taskkill //F //IM now.exe)",
-      "Bash(touch src/main/c/main.c)"
+      "Bash(touch src/main/c/main.c)",
+      "Bash(grep -A10 \"static const char \\\\*make_opt_flag\" components/export/cmake/src/main/c/now_export_cmake.c)",
+      "Bash(sed -i '/static const char \\\\*make_opt_flag/,/^}$/d' components/export/cmake/src/main/c/now_export_cmake.c)",
+      "Bash(sed -i '10r /tmp/make_helper.c' components/export/make/src/main/c/now_export_make.c)",
+      "Bash(grep -A30 \"static const char \\\\*meson_opt_level\" components/export/make/src/main/c/now_export_make.c)",
+      "Bash(sed -i '/static const char \\\\*meson_opt_level/,/^}$/d; /static const char \\\\*meson_c_std/,/^}$/d; /static const char \\\\*meson_cxx_std/,/^}$/d' components/export/make/src/main/c/now_export_make.c)"
     ]
   }
 }

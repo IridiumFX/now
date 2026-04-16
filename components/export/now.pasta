@@ -1,8 +1,6 @@
 {
   artifact: "now-export",
   lang: "c",
-  components: [
-    "buildtools",
-    "maven"
-  ]
+  sources: { headers: "src/main/h/internal" },
+  components: ["cmake", "make", "meson", "bazel", "maven"]
 }
