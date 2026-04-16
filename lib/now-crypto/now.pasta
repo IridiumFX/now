@@ -1,0 +1,5 @@
+{
+  artifact: "now-crypto",
+  lang: "c",
+  sources: { dir: "src/main/c" }
+}

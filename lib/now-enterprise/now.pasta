@@ -1,0 +1,5 @@
+{
+  artifact: "now-enterprise",
+  lang: "c",
+  sources: { dir: "src/main/c", headers: "src/main/h/internal" }
+}

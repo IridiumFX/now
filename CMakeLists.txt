@@ -36,30 +36,35 @@ add_library(now
     lib/pico_http/src/main/c/pico_transport.c
     lib/pico_http/src/main/c/pico_http_apennines.c
     lib/pico_http/src/main/c/pico_h2.c
-    src/main/c/now_tui.c
     lib/pico_http/src/main/c/pico_ws.c
     src/main/c/now_procure.c
     src/main/c/now_package.c
     src/main/c/now_workspace.c
-    src/main/c/now_plugin.c
-    src/main/c/now_ci.c
     src/main/c/now_layer.c
     src/main/c/now_arch.c
-    src/main/c/now_export.c
-    src/main/c/now_trust.c
-    src/main/c/now_repro.c
-    src/main/c/now_advisory.c
-    src/main/c/now_auth.c
     src/main/c/now_module.c
-    src/main/c/now_maven.c
-    src/main/c/now_ed25519.c
     src/main/c/now_cache.c
-    src/main/c/now_plugin_registry.c
-    src/main/c/now_sbom.c
-    src/main/c/now_remote.c
-    src/main/c/now_audit.c
-    src/main/c/now_watch.c
-    src/main/c/now_graph.c
+    # now-enterprise module
+    lib/now-enterprise/src/main/c/now_auth.c
+    lib/now-enterprise/src/main/c/now_audit.c
+    lib/now-enterprise/src/main/c/now_remote.c
+    lib/now-enterprise/src/main/c/now_graph.c
+    lib/now-enterprise/src/main/c/now_trust.c
+    lib/now-enterprise/src/main/c/now_repro.c
+    lib/now-enterprise/src/main/c/now_advisory.c
+    lib/now-enterprise/src/main/c/now_sbom.c
+    # now-export module
+    lib/now-export/src/main/c/now_export.c
+    lib/now-export/src/main/c/now_maven.c
+    # now-plugins module
+    lib/now-plugins/src/main/c/now_plugin.c
+    lib/now-plugins/src/main/c/now_plugin_registry.c
+    # now-crypto module
+    lib/now-crypto/src/main/c/now_ed25519.c
+    # now-cli module
+    lib/now-cli/src/main/c/now_ci.c
+    lib/now-cli/src/main/c/now_tui.c
+    lib/now-cli/src/main/c/now_watch.c
     # Alforno (vendored sources — avoids FetchContent conflict with pasta)
     lib/alforno/src/main/c/alforno.c
     lib/alforno/src/main/c/alforno_param.c
@@ -117,6 +122,10 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/apennines/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/lib/now-enterprise/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/lib/now-export/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/lib/now-plugins/src/main/h/internal
+            ${CMAKE_SOURCE_DIR}/lib/now-cli/src/main/h/internal
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
 )
@@ -165,7 +174,7 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- CLI executable ----
-add_executable(now_cli src/main/c/main.c)
+add_executable(now_cli lib/now-cli/src/main/c/main.c)
 set_target_properties(now_cli PROPERTIES OUTPUT_NAME now)
 target_link_libraries(now_cli PRIVATE now)
 target_include_directories(now_cli PRIVATE
@@ -173,6 +182,10 @@ target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
     ${CMAKE_SOURCE_DIR}/lib/basta/src/main/h
     ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
+    ${CMAKE_SOURCE_DIR}/lib/now-enterprise/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/lib/now-export/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/lib/now-plugins/src/main/h/internal
+    ${CMAKE_SOURCE_DIR}/lib/now-cli/src/main/h/internal
 )
 
 # ---- Test executable ----
@@ -188,6 +201,10 @@ if(NOW_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h
         ${CMAKE_SOURCE_DIR}/lib/pico_http/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/lib/now-enterprise/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/lib/now-export/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/lib/now-plugins/src/main/h/internal
+        ${CMAKE_SOURCE_DIR}/lib/now-cli/src/main/h/internal
     )
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"
