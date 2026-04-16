@@ -11,7 +11,8 @@ endif()
 
 # ---- Pasta dependency (submodule) ----
 set(PASTA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(lib/pasta)
+# Pasta replaced by Basta (strict superset) — compat shim at src/main/h/pasta.h
+# add_subdirectory(lib/pasta)
 
 # ---- Optional TLS via mbedTLS (submodule) ----
 option(PICO_HTTP_TLS "Enable HTTPS support via mbedTLS" ON)
@@ -136,7 +137,7 @@ target_include_directories(now
             ${CMAKE_SOURCE_DIR}/lib/basta/src/main/c
 )
 
-target_link_libraries(now PUBLIC pasta)
+# Basta sources are vendored directly into libnow (no separate library)
 if(WIN32)
     target_link_libraries(now PRIVATE ws2_32)
 endif()

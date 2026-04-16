@@ -21,16 +21,15 @@
   ],
 
   vendored: [
-    "lib/pasta",
-    "lib/alforno",
     "lib/basta",
+    "lib/alforno",
     "lib/apennines",
     "lib/pico_http"
   ],
 
   compile: {
     warnings: ["Wall", "Wextra"],
-    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "PASTA_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"]
+    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"]
   },
 
   link: {
