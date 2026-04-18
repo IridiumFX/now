@@ -117,7 +117,11 @@ NOW_API int now_dirwalk_save(const NowDirwalkCache *cache, const char *path) {
         PastaValue *entry = pasta_new_map();
         if (!entry) continue;
 
-        pasta_set(entry, "mtime", pasta_new_number((double)e->mtime));
+        /* Serialize mtime as a string — high-precision values (nanoseconds
+         * or 100ns ticks) exceed double's 2^53 integer range. */
+        char mbuf[32];
+        snprintf(mbuf, sizeof(mbuf), "%lld", e->mtime);
+        pasta_set(entry, "mtime", pasta_new_string(mbuf));
 
         PastaValue *arr = pasta_new_array();
         if (arr) {
@@ -182,11 +186,20 @@ NOW_API int now_dirwalk_load(NowDirwalkCache *cache, const char *path) {
         const PastaValue *ev = pasta_map_get(entry, "e");
         const PastaValue *dv = pasta_map_get(entry, "d");
         if (!mv || !ev || !dv) continue;
-        if (pasta_type(mv) != PASTA_NUMBER) continue;
         if (pasta_type(ev) != PASTA_ARRAY)  continue;
         if (pasta_type(dv) != PASTA_STRING) continue;
 
-        long long mtime = (long long)pasta_get_number(mv);
+        /* mtime may be either a string (high-precision, current format) or
+         * a number (older low-precision caches — gets invalidated on first
+         * walk anyway since units differ). */
+        long long mtime;
+        if (pasta_type(mv) == PASTA_STRING) {
+            mtime = strtoll(pasta_get_string(mv), NULL, 10);
+        } else if (pasta_type(mv) == PASTA_NUMBER) {
+            mtime = (long long)pasta_get_number(mv);
+        } else {
+            continue;
+        }
         size_t count = pasta_count(ev);
         const char *flags  = pasta_get_string(dv);
 

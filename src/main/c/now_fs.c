@@ -219,6 +219,34 @@ static void canonicalize_into(char *out, size_t outcap, const char *path) {
 #endif
 }
 
+/* High-precision modification time. Units differ per platform (Windows:
+ * 100ns ticks since 1601; POSIX: ns since 1970) but only same-platform
+ * values are compared, so the units don't need to match across OSes.
+ * Returns -1 on error. */
+static long long dir_mtime_hires(const char *path) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) return -1;
+    ULARGE_INTEGER ts;
+    ts.LowPart  = data.ftLastWriteTime.dwLowDateTime;
+    ts.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    return (long long)ts.QuadPart;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+  #if defined(__APPLE__)
+    return (long long)st.st_mtimespec.tv_sec * 1000000000LL
+         + (long long)st.st_mtimespec.tv_nsec;
+  #elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    return (long long)st.st_mtimespec.tv_sec * 1000000000LL
+         + (long long)st.st_mtimespec.tv_nsec;
+  #else
+    return (long long)st.st_mtim.tv_sec * 1000000000LL
+         + (long long)st.st_mtim.tv_nsec;
+  #endif
+#endif
+}
+
 /* Walk a directory using the global dirwalk cache if available.
  * Writes matching source files to `out` (recursively through subdirs).
  * Updates the cache on miss/mtime mismatch. */
@@ -231,10 +259,8 @@ static int discover_recursive(const char *basedir, const char *rel_dir,
         abs_dir = strdup(basedir);
     if (!abs_dir) return 0;
 
-    /* Get current mtime */
-    struct stat st;
-    long long cur_mtime = -1;
-    if (stat(abs_dir, &st) == 0) cur_mtime = (long long)st.st_mtime;
+    /* Get current mtime (high-precision) */
+    long long cur_mtime = dir_mtime_hires(abs_dir);
 
     /* Try cache */
     char canon[1024];
