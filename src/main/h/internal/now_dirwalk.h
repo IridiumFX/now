@@ -51,4 +51,10 @@ NOW_API void now_dirwalk_put(NowDirwalkCache *cache, const char *dir_path,
  * NULL means no cache active — full walk every time. */
 NOW_API extern NowDirwalkCache *now_dirwalk_cache_global;
 
+/* Compute the cache file path for a project.
+ * Uses ~/.now/dirwalk/{sha256-prefix-of-abs-basedir}.pasta so the cache
+ * survives `now clean` wiping target/. Creates parent dir as needed.
+ * Returns malloc'd path; caller frees. Returns NULL on failure. */
+NOW_API char *now_dirwalk_cache_path(const char *basedir);
+
 #endif /* NOW_DIRWALK_H */

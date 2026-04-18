@@ -3,6 +3,7 @@
  */
 #include "now_dirwalk.h"
 #include "now_fs.h"
+#include "now_manifest.h"
 #include "pasta.h"
 
 #include <stdlib.h>
@@ -229,4 +230,50 @@ NOW_API int now_dirwalk_load(NowDirwalkCache *cache, const char *path) {
 
     pasta_free(root);
     return 0;
+}
+
+/* ---- Project-keyed cache path ---- */
+
+NOW_API char *now_dirwalk_cache_path(const char *basedir) {
+    if (!basedir) return NULL;
+
+    /* Canonicalize basedir → absolute path */
+    char canon[1024];
+#ifdef _WIN32
+    if (!_fullpath(canon, basedir, sizeof(canon)))
+        snprintf(canon, sizeof(canon), "%s", basedir);
+#else
+    if (!realpath(basedir, canon))
+        snprintf(canon, sizeof(canon), "%s", basedir);
+#endif
+
+    /* SHA-256 prefix as project identity */
+    char *full_hash = now_sha256_string(canon, strlen(canon));
+    if (!full_hash) return NULL;
+    char prefix[17];
+    memcpy(prefix, full_hash, 16);
+    prefix[16] = '\0';
+    free(full_hash);
+
+    /* ~/.now/dirwalk/ */
+    const char *home = NULL;
+#ifdef _WIN32
+    home = getenv("USERPROFILE");
+    if (!home) home = getenv("HOME");
+#else
+    home = getenv("HOME");
+#endif
+    if (!home) return NULL;
+
+    char *dotnow  = now_path_join(home,   ".now");
+    char *dwdir   = dotnow ? now_path_join(dotnow, "dirwalk") : NULL;
+    free(dotnow);
+    if (!dwdir) return NULL;
+    now_mkdir_p(dwdir);
+
+    char fname[32];
+    snprintf(fname, sizeof(fname), "%s.pasta", prefix);
+    char *out = now_path_join(dwdir, fname);
+    free(dwdir);
+    return out;
 }

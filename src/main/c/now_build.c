@@ -870,13 +870,16 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     now_toolchain_resolve(&ctx->toolchain, project);
 
     /* Load dirwalk cache — lets resolve_modules/now_discover_sources skip
-     * readdir() on directories whose mtime hasn't changed. */
+     * readdir() on directories whose mtime hasn't changed. Cache lives
+     * under ~/.now/dirwalk/ so it survives `now clean` wiping target/. */
     {
         static NowDirwalkCache dirwalk_cache;
-        char *dwpath = now_path_join(basedir, "target/.now-dirwalk");
-        now_dirwalk_load(&dirwalk_cache, dwpath);
-        now_dirwalk_cache_global = &dirwalk_cache;
-        free(dwpath);
+        char *dwpath = now_dirwalk_cache_path(basedir);
+        if (dwpath) {
+            now_dirwalk_load(&dirwalk_cache, dwpath);
+            now_dirwalk_cache_global = &dirwalk_cache;
+            free(dwpath);
+        }
     }
 
     /* Create target directories */
@@ -2613,7 +2616,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
     /* Save dirwalk cache — any new entries discovered during this build */
     if (now_dirwalk_cache_global) {
-        char *dwpath = now_path_join(ctx->basedir, "target/.now-dirwalk");
+        char *dwpath = now_dirwalk_cache_path(ctx->basedir);
         if (dwpath) {
             now_dirwalk_save(now_dirwalk_cache_global, dwpath);
             free(dwpath);
