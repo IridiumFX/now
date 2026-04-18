@@ -5,6 +5,7 @@
  */
 #include "now_build.h"
 #include "now_manifest.h"
+#include "now_dirwalk.h"
 #include "now_repro.h"
 #include "now_module.h"
 #include "now_cache.h"
@@ -867,6 +868,16 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
 
     now_lang_registry_init();
     now_toolchain_resolve(&ctx->toolchain, project);
+
+    /* Load dirwalk cache — lets resolve_modules/now_discover_sources skip
+     * readdir() on directories whose mtime hasn't changed. */
+    {
+        static NowDirwalkCache dirwalk_cache;
+        char *dwpath = now_path_join(basedir, "target/.now-dirwalk");
+        now_dirwalk_load(&dirwalk_cache, dwpath);
+        now_dirwalk_cache_global = &dirwalk_cache;
+        free(dwpath);
+    }
 
     /* Create target directories */
     char *obj_dir = now_path_join(basedir, "target/obj/main");
@@ -2598,6 +2609,15 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             manifest.link_flags_hash = lfh;
         }
         now_manifest_save(&manifest, manifest_path);
+    }
+
+    /* Save dirwalk cache — any new entries discovered during this build */
+    if (now_dirwalk_cache_global) {
+        char *dwpath = now_path_join(ctx->basedir, "target/.now-dirwalk");
+        if (dwpath) {
+            now_dirwalk_save(now_dirwalk_cache_global, dwpath);
+            free(dwpath);
+        }
     }
 
     free(fhash);

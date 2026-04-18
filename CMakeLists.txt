@@ -31,6 +31,7 @@ add_library(now
     src/main/c/now_lang.c
     src/main/c/now_build.c
     src/main/c/now_manifest.c
+    src/main/c/now_dirwalk.c
     src/main/c/now_version.c
     src/main/c/now_resolve.c
     lib/pico_http/src/main/c/pico_http.c

@@ -202,50 +202,26 @@ static int ext_matches(const char *path, const char **exts) {
     return 0;
 }
 
+#include "now_dirwalk.h"
+
+/* Canonicalize a path for use as cache key. Falls back to the input on error. */
+static void canonicalize_into(char *out, size_t outcap, const char *path) {
 #ifdef _WIN32
-
-/* Windows: recursive directory walk using FindFirstFile/FindNextFile */
-static int discover_recursive(const char *basedir, const char *rel_dir,
-                               const char **exts, NowFileList *out) {
-    char *search_dir;
-    if (rel_dir && *rel_dir)
-        search_dir = now_path_join(basedir, rel_dir);
-    else
-        search_dir = strdup(basedir);
-
-    char *pattern = now_path_join(search_dir, "*");
-    free(search_dir);
-
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(pattern, &fd);
-    free(pattern);
-
-    if (hFind == INVALID_HANDLE_VALUE) return 0;  /* empty dir is OK */
-
-    do {
-        if (fd.cFileName[0] == '.') continue;
-
-        char *rel_path;
-        if (rel_dir && *rel_dir)
-            rel_path = now_path_join(rel_dir, fd.cFileName);
-        else
-            rel_path = strdup(fd.cFileName);
-
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            discover_recursive(basedir, rel_path, exts, out);
-        } else if (ext_matches(fd.cFileName, exts)) {
-            now_filelist_push(out, rel_path);
-        }
-        free(rel_path);
-    } while (FindNextFileA(hFind, &fd));
-
-    FindClose(hFind);
-    return 0;
+    if (!_fullpath(out, path, outcap)) {
+        strncpy(out, path, outcap - 1);
+        out[outcap - 1] = '\0';
+    }
+#else
+    if (!realpath(path, out)) {
+        strncpy(out, path, outcap - 1);
+        out[outcap - 1] = '\0';
+    }
+#endif
 }
 
-#else
-
-/* POSIX: recursive directory walk using opendir/readdir */
+/* Walk a directory using the global dirwalk cache if available.
+ * Writes matching source files to `out` (recursively through subdirs).
+ * Updates the cache on miss/mtime mismatch. */
 static int discover_recursive(const char *basedir, const char *rel_dir,
                                const char **exts, NowFileList *out) {
     char *abs_dir;
@@ -253,35 +229,116 @@ static int discover_recursive(const char *basedir, const char *rel_dir,
         abs_dir = now_path_join(basedir, rel_dir);
     else
         abs_dir = strdup(basedir);
+    if (!abs_dir) return 0;
 
+    /* Get current mtime */
+    struct stat st;
+    long long cur_mtime = -1;
+    if (stat(abs_dir, &st) == 0) cur_mtime = (long long)st.st_mtime;
+
+    /* Try cache */
+    char canon[1024];
+    canonicalize_into(canon, sizeof(canon), abs_dir);
+
+    const NowDirCacheEntry *cached =
+        now_dirwalk_cache_global
+            ? now_dirwalk_get(now_dirwalk_cache_global, canon, cur_mtime)
+            : NULL;
+
+    if (cached) {
+        /* Replay from cache — no readdir */
+        for (size_t i = 0; i < cached->count; i++) {
+            const char *name = cached->entries[i];
+            char *rel_path = (rel_dir && *rel_dir)
+                ? now_path_join(rel_dir, name)
+                : strdup(name);
+            if (!rel_path) continue;
+            if (cached->is_dir[i]) {
+                discover_recursive(basedir, rel_path, exts, out);
+            } else if (ext_matches(name, exts)) {
+                now_filelist_push(out, rel_path);
+            }
+            free(rel_path);
+        }
+        free(abs_dir);
+        return 0;
+    }
+
+    /* Miss — full readdir, collect entries for both traversal and cache */
+    char **entries_list = NULL;
+    int   *isdir_list   = NULL;
+    size_t entries_count = 0, entries_cap = 0;
+
+#ifdef _WIN32
+    char *pattern = now_path_join(abs_dir, "*");
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = pattern ? FindFirstFileA(pattern, &fd) : INVALID_HANDLE_VALUE;
+    free(pattern);
+    if (hFind == INVALID_HANDLE_VALUE) { free(abs_dir); return 0; }
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+        if (entries_count >= entries_cap) {
+            size_t newcap = entries_cap ? entries_cap * 2 : 16;
+            char **ne = (char **)realloc(entries_list, newcap * sizeof(char *));
+            int   *id = (int *)realloc(isdir_list,   newcap * sizeof(int));
+            if (!ne || !id) { free(ne ? ne : entries_list); free(id ? id : isdir_list); FindClose(hFind); free(abs_dir); return 0; }
+            entries_list = ne; isdir_list = id; entries_cap = newcap;
+        }
+        entries_list[entries_count] = strdup(fd.cFileName);
+        isdir_list[entries_count]   = is_dir;
+        entries_count++;
+    } while (FindNextFileA(hFind, &fd));
+    FindClose(hFind);
+#else
     DIR *d = opendir(abs_dir);
-    free(abs_dir);
-    if (!d) return 0;
-
+    if (!d) { free(abs_dir); return 0; }
     struct dirent *entry;
     while ((entry = readdir(d)) != NULL) {
         if (entry->d_name[0] == '.') continue;
-
-        char *rel_path;
-        if (rel_dir && *rel_dir)
-            rel_path = now_path_join(rel_dir, entry->d_name);
-        else
-            rel_path = strdup(entry->d_name);
-
-        char *full = now_path_join(basedir, rel_path);
-        if (now_is_dir(full)) {
-            discover_recursive(basedir, rel_path, exts, out);
-        } else if (ext_matches(entry->d_name, exts)) {
-            now_filelist_push(out, rel_path);
-        }
+        char *full = now_path_join(abs_dir, entry->d_name);
+        int is_dir = full ? now_is_dir(full) : 0;
         free(full);
-        free(rel_path);
+        if (entries_count >= entries_cap) {
+            size_t newcap = entries_cap ? entries_cap * 2 : 16;
+            char **ne = (char **)realloc(entries_list, newcap * sizeof(char *));
+            int   *id = (int *)realloc(isdir_list,   newcap * sizeof(int));
+            if (!ne || !id) { free(ne ? ne : entries_list); free(id ? id : isdir_list); closedir(d); free(abs_dir); return 0; }
+            entries_list = ne; isdir_list = id; entries_cap = newcap;
+        }
+        entries_list[entries_count] = strdup(entry->d_name);
+        isdir_list[entries_count]   = is_dir;
+        entries_count++;
     }
     closedir(d);
+#endif
+    free(abs_dir);
+
+    /* Traverse using the collected list */
+    for (size_t i = 0; i < entries_count; i++) {
+        char *rel_path = (rel_dir && *rel_dir)
+            ? now_path_join(rel_dir, entries_list[i])
+            : strdup(entries_list[i]);
+        if (!rel_path) continue;
+        if (isdir_list[i]) {
+            discover_recursive(basedir, rel_path, exts, out);
+        } else if (ext_matches(entries_list[i], exts)) {
+            now_filelist_push(out, rel_path);
+        }
+        free(rel_path);
+    }
+
+    /* Update cache — transfers ownership of entries_list[] and isdir_list[] */
+    if (now_dirwalk_cache_global && cur_mtime >= 0) {
+        now_dirwalk_put(now_dirwalk_cache_global, canon, cur_mtime,
+                         entries_list, isdir_list, entries_count);
+    } else {
+        for (size_t i = 0; i < entries_count; i++) free(entries_list[i]);
+        free(entries_list);
+        free(isdir_list);
+    }
     return 0;
 }
-
-#endif
 
 NOW_API int now_discover_sources(const char *basedir, const char *dir,
                          const char **exts, NowFileList *out) {
