@@ -599,3 +599,124 @@ NOW_API char *now_sha256_file_memo(const char *path, NowHashMemo *memo) {
     }
     return h;
 }
+
+/* ---- Parallel prefill ----
+ * Hashes a batch of files concurrently, then bulk-inserts into the memo.
+ * Each worker writes to its own slot in the results array; the insert phase
+ * runs serially after join, so the memo itself stays single-threaded. */
+
+#ifdef _WIN32
+#include <windows.h>
+typedef HANDLE now_thread_t;
+#define NOW_THREAD_RET  DWORD WINAPI
+#define NOW_THREAD_DONE return 0
+static int now_thread_start(now_thread_t *th, LPTHREAD_START_ROUTINE fn, void *arg) {
+    *th = CreateThread(NULL, 0, fn, arg, 0, NULL);
+    return *th ? 0 : -1;
+}
+static void now_thread_join(now_thread_t th) {
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+}
+#else
+#include <pthread.h>
+typedef pthread_t now_thread_t;
+#define NOW_THREAD_RET  void *
+#define NOW_THREAD_DONE return NULL
+static int now_thread_start(now_thread_t *th, void *(*fn)(void *), void *arg) {
+    return pthread_create(th, NULL, fn, arg);
+}
+static void now_thread_join(now_thread_t th) {
+    pthread_join(th, NULL);
+}
+#endif
+
+typedef struct {
+    const char *const *paths;
+    char **results;
+    long long *mtimes;
+    size_t start;
+    size_t end;
+} PrefillJob;
+
+static NOW_THREAD_RET prefill_worker(void *arg) {
+    PrefillJob *job = (PrefillJob *)arg;
+    for (size_t i = job->start; i < job->end; i++) {
+        if (!job->paths[i]) continue;
+        struct stat st;
+        if (stat(job->paths[i], &st) != 0) continue;
+        job->mtimes[i] = (long long)st.st_mtime;
+        job->results[i] = now_sha256_file(job->paths[i]);
+    }
+    NOW_THREAD_DONE;
+}
+
+NOW_API size_t now_hash_memo_prefill(NowHashMemo *memo,
+                                       const char *const *paths,
+                                       size_t count, int jobs) {
+    if (!memo || !memo->buckets || !paths || count == 0) return 0;
+    if (jobs <= 0) jobs = 4;
+    if ((size_t)jobs > count) jobs = (int)count;
+    if (jobs < 1) jobs = 1;
+
+    char **results = (char **)calloc(count, sizeof(char *));
+    long long *mtimes = (long long *)calloc(count, sizeof(long long));
+    now_thread_t *threads = (now_thread_t *)calloc((size_t)jobs, sizeof(now_thread_t));
+    PrefillJob *pjobs = (PrefillJob *)calloc((size_t)jobs, sizeof(PrefillJob));
+    if (!results || !mtimes || !threads || !pjobs) {
+        free(results); free(mtimes); free(threads); free(pjobs);
+        return 0;
+    }
+
+    size_t per = (count + (size_t)jobs - 1) / (size_t)jobs;
+    int started = 0;
+    for (int t = 0; t < jobs; t++) {
+        pjobs[t].paths   = paths;
+        pjobs[t].results = results;
+        pjobs[t].mtimes  = mtimes;
+        pjobs[t].start   = (size_t)t * per;
+        pjobs[t].end     = pjobs[t].start + per;
+        if (pjobs[t].end > count) pjobs[t].end = count;
+        if (pjobs[t].start >= pjobs[t].end) continue;
+        if (now_thread_start(&threads[t], prefill_worker, &pjobs[t]) == 0) {
+            started++;
+        } else {
+            /* fallback: run inline */
+            prefill_worker(&pjobs[t]);
+            threads[t] = 0;
+        }
+    }
+    for (int t = 0; t < jobs; t++) {
+        if (threads[t]) now_thread_join(threads[t]);
+    }
+    (void)started;
+
+    /* Bulk-insert results into memo (serial, no contention) */
+    size_t inserted = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!results[i] || !paths[i]) { free(results[i]); continue; }
+
+        unsigned int idx = memo_hash(paths[i]) % memo->bucket_count;
+        int exists = 0;
+        for (NowHashMemoEntry *e = memo->buckets[idx]; e; e = e->next) {
+            if (strcmp(e->path, paths[i]) == 0) { exists = 1; break; }
+        }
+        if (exists) { free(results[i]); continue; }
+
+        NowHashMemoEntry *ne = (NowHashMemoEntry *)malloc(sizeof(NowHashMemoEntry));
+        if (!ne) { free(results[i]); continue; }
+        ne->path  = strdup(paths[i]);
+        ne->hash  = results[i];
+        ne->mtime = mtimes[i];
+        ne->next  = memo->buckets[idx];
+        memo->buckets[idx] = ne;
+        memo->count++;
+        inserted++;
+    }
+
+    free(threads);
+    free(pjobs);
+    free(results);
+    free(mtimes);
+    return inserted;
+}

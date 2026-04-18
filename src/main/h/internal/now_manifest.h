@@ -99,4 +99,12 @@ NOW_API char *now_sha256_file_memo(const char *path, NowHashMemo *memo);
  * Set by now_build_compile, cleared after. NOT thread-safe. */
 NOW_API extern NowHashMemo *now_hash_memo_global;
 
+/* Prefill memo by hashing many files in parallel. After return, subsequent
+ * now_sha256_file_memo() calls on these paths hit the cache instead of
+ * re-reading. `paths` are absolute paths; `jobs` is the thread count
+ * (0/negative → 4). Returns number of entries actually inserted. */
+NOW_API size_t now_hash_memo_prefill(NowHashMemo *memo,
+                                       const char *const *paths,
+                                       size_t count, int jobs);
+
 #endif /* NOW_MANIFEST_H */

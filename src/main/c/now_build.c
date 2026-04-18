@@ -1954,6 +1954,21 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     if (max_jobs < 1) max_jobs = 1;
     if (max_jobs > 64) max_jobs = 64;
 
+    /* Prefill hash memo in parallel — amortizes SHA-256 across cores so the
+     * per-source cache-probe loop becomes pure memo lookup. */
+    if (ctx->sources.count > 1) {
+        char **full_paths = (char **)calloc(ctx->sources.count, sizeof(char *));
+        if (full_paths) {
+            for (size_t i = 0; i < ctx->sources.count; i++)
+                full_paths[i] = now_path_join(ctx->basedir, ctx->sources.paths[i]);
+            now_hash_memo_prefill(&hash_memo,
+                                   (const char *const *)full_paths,
+                                   ctx->sources.count, max_jobs);
+            for (size_t i = 0; i < ctx->sources.count; i++) free(full_paths[i]);
+            free(full_paths);
+        }
+    }
+
     /* Phase 1: Classify sources, check manifest, build job list */
     size_t njobs = 0;
     size_t jobs_cap = ctx->sources.count > 0 ? ctx->sources.count : 1;
