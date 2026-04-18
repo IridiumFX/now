@@ -544,9 +544,29 @@ static void push_include(NowFileList *dep_includes, const char *path) {
  * For each module path, check for now.pasta → use its layout.
  * If no now.pasta, apply conventions (src/main/c, src/main/h).
  * Recursively resolves modules declared by sub-modules.
- * Adds sources to ctx->sources, include paths to ctx->dep_includes. */
+ * Writes to scope->sources / scope->dep_includes (may be thread-local). */
 
-static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
+typedef struct {
+    NowFileList *sources;
+    NowFileList *dep_includes;
+    char *resolved_abs[256];
+    int   resolved_count;
+} ResolveScope;
+
+static void resolve_scope_init(ResolveScope *s, NowFileList *sources,
+                                 NowFileList *dep_includes) {
+    s->sources = sources;
+    s->dep_includes = dep_includes;
+    s->resolved_count = 0;
+    memset(s->resolved_abs, 0, sizeof(s->resolved_abs));
+}
+
+static void resolve_scope_free(ResolveScope *s) {
+    for (int i = 0; i < s->resolved_count; i++) free(s->resolved_abs[i]);
+    s->resolved_count = 0;
+}
+
+static void resolve_modules(ResolveScope *scope, const char *basedir,
                               const char *parent_rel,
                               char **mod_paths, size_t mod_count,
                               const char **exts, int depth) {
@@ -564,10 +584,6 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
         /* Dedup: canonicalize path then check if already resolved.
          * Handles ../pasta vs lib/pasta resolving to the same directory. */
         {
-            static char *resolved_abs[256];
-            static int resolved_count = 0;
-            if (depth == 0 && m == 0 && parent_rel == NULL) resolved_count = 0;
-
             char canon[1024];
 #ifdef _WIN32
             _fullpath(canon, mod_abs, sizeof(canon));
@@ -575,11 +591,11 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
             if (!realpath(mod_abs, canon)) strncpy(canon, mod_abs, sizeof(canon));
 #endif
             int already = 0;
-            for (int r = 0; r < resolved_count && !already; r++)
-                if (strcmp(resolved_abs[r], canon) == 0) already = 1;
+            for (int r = 0; r < scope->resolved_count && !already; r++)
+                if (strcmp(scope->resolved_abs[r], canon) == 0) already = 1;
             if (already) { free(mod_abs); free(mod); continue; }
-            if (resolved_count < 256)
-                resolved_abs[resolved_count++] = strdup(canon);
+            if (scope->resolved_count < 256)
+                scope->resolved_abs[scope->resolved_count++] = strdup(canon);
         }
 
         /* Check for now.pasta in the module directory */
@@ -598,7 +614,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                     for (size_t f = 0; f < mfl.count; f++) {
                         /* Prefix with module path for the main build */
                         char *rel = now_path_join(mod, mfl.paths[f]);
-                        if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                        if (rel) { now_filelist_push(scope->sources, rel); free(rel); }
                     }
                 }
                 now_filelist_free(&mfl);
@@ -606,32 +622,32 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                 /* Add module's explicit includes */
                 for (size_t i = 0; i < mp->sources.include.count; i++) {
                     char *rel = now_path_join(mod, mp->sources.include.items[i]);
-                    if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                    if (rel) { now_filelist_push(scope->sources, rel); free(rel); }
                 }
 
                 /* Add module's header paths as include dirs */
                 if (mp->sources.headers) {
                     char *hdr = now_path_join(mod_abs, mp->sources.headers);
-                    if (hdr) { push_include(&ctx->dep_includes, hdr); free(hdr); }
+                    if (hdr) { push_include(scope->dep_includes, hdr); free(hdr); }
                 }
                 if (mp->sources.private_headers) {
                     char *phdr = now_path_join(mod_abs, mp->sources.private_headers);
-                    if (phdr) { push_include(&ctx->dep_includes, phdr); free(phdr); }
+                    if (phdr) { push_include(scope->dep_includes, phdr); free(phdr); }
                 }
 
                 /* Add module's compile.includes (relative to module dir) */
                 for (size_t i = 0; i < mp->compile.includes.count; i++) {
                     char *inc = now_path_join(mod_abs, mp->compile.includes.items[i]);
-                    if (inc) { push_include(&ctx->dep_includes, inc); free(inc); }
+                    if (inc) { push_include(scope->dep_includes, inc); free(inc); }
                 }
 
                 /* Recurse on explicitly declared components and vendored deps */
                 if (mp->components.count > 0)
-                    resolve_modules(ctx, ctx->basedir, mod,
+                    resolve_modules(scope, basedir, mod,
                                      mp->components.items,
                                      mp->components.count, exts, depth + 1);
                 if (mp->vendored.count > 0) {
-                    resolve_modules(ctx, ctx->basedir, mod,
+                    resolve_modules(scope, basedir, mod,
                                      mp->vendored.items,
                                      mp->vendored.count, exts, depth + 1);
                 }
@@ -654,7 +670,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                 if (now_discover_sources(mod_abs, "src/main/c", exts, &mfl) == 0) {
                     for (size_t f = 0; f < mfl.count; f++) {
                         char *rel = now_path_join(mod, mfl.paths[f]);
-                        if (rel) { now_filelist_push(&ctx->sources, rel); free(rel); }
+                        if (rel) { now_filelist_push(scope->sources, rel); free(rel); }
                     }
                 }
                 now_filelist_free(&mfl);
@@ -662,17 +678,17 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                 /* Add include paths by convention */
                 char *conv_hdr = now_path_join(mod_abs, "src/main/h");
                 if (conv_hdr && now_is_dir(conv_hdr))
-                    push_include(&ctx->dep_includes, conv_hdr);
+                    push_include(scope->dep_includes, conv_hdr);
                 free(conv_hdr);
 
                 char *conv_hdr_int = now_path_join(mod_abs, "src/main/h/internal");
                 if (conv_hdr_int && now_is_dir(conv_hdr_int))
-                    push_include(&ctx->dep_includes, conv_hdr_int);
+                    push_include(scope->dep_includes, conv_hdr_int);
                 free(conv_hdr_int);
 
                 char *conv_src2 = now_path_join(mod_abs, "src/main/c");
                 if (conv_src2 && now_is_dir(conv_src2))
-                    push_include(&ctx->dep_includes, conv_src2);
+                    push_include(scope->dep_includes, conv_src2);
                 free(conv_src2);
             }
 
@@ -694,7 +710,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                             char *sub_mod = now_path_join(mod, fd.cFileName);
                             if (sub_mod) {
                                 char *sub_paths[] = { sub_mod };
-                                resolve_modules(ctx, ctx->basedir, NULL,
+                                resolve_modules(scope, basedir, NULL,
                                                  sub_paths, 1, exts, depth + 1);
                                 free(sub_mod);
                             }
@@ -716,7 +732,7 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
                             char *sub_mod = now_path_join(mod, entry->d_name);
                             if (sub_mod) {
                                 char *sub_paths[] = { sub_mod };
-                                resolve_modules(ctx, ctx->basedir, NULL,
+                                resolve_modules(scope, basedir, NULL,
                                                  sub_paths, 1, exts, depth + 1);
                                 free(sub_mod);
                             }
@@ -734,6 +750,107 @@ static void resolve_modules(NowBuildCtx *ctx, const char *basedir,
         free(mod_abs);
         free(mod);
     }
+}
+
+/* Parallel top-level module resolution: spawn one thread per top-level entry
+ * (components + vendored), each producing a thread-local ResolveScope, then
+ * merge into ctx with a final dedup pass (canonical path). */
+
+typedef struct {
+    ResolveScope scope;
+    NowFileList sources;
+    NowFileList dep_includes;
+    const char *basedir;
+    char *mod_name;            /* single top-level entry this thread owns */
+    const char **exts;
+} ResolveJob;
+
+#ifdef _WIN32
+static DWORD WINAPI resolve_worker(LPVOID arg) {
+#else
+static void *resolve_worker(void *arg) {
+#endif
+    ResolveJob *j = (ResolveJob *)arg;
+    now_filelist_init(&j->sources);
+    now_filelist_init(&j->dep_includes);
+    resolve_scope_init(&j->scope, &j->sources, &j->dep_includes);
+    resolve_modules(&j->scope, j->basedir, NULL, &j->mod_name, 1, j->exts, 0);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static int filelist_contains(const NowFileList *fl, const char *s) {
+    for (size_t i = 0; i < fl->count; i++)
+        if (strcmp(fl->paths[i], s) == 0) return 1;
+    return 0;
+}
+
+static void resolve_top_parallel(NowBuildCtx *ctx, const char *basedir,
+                                   const NowProject *project, const char **exts,
+                                   size_t n_comp, size_t n_vend) {
+    size_t n_top = n_comp + n_vend;
+
+#ifdef _WIN32
+    HANDLE *threads = (HANDLE *)calloc(n_top, sizeof(HANDLE));
+#else
+    pthread_t *threads = (pthread_t *)calloc(n_top, sizeof(pthread_t));
+#endif
+    ResolveJob *jobs = (ResolveJob *)calloc(n_top, sizeof(ResolveJob));
+    if (!threads || !jobs) { free(threads); free(jobs); return; }
+
+    /* Prepare per-thread jobs */
+    for (size_t i = 0; i < n_comp; i++) {
+        jobs[i].basedir  = basedir;
+        jobs[i].mod_name = project->components.items[i];
+        jobs[i].exts     = exts;
+    }
+    for (size_t i = 0; i < n_vend; i++) {
+        jobs[n_comp + i].basedir  = basedir;
+        jobs[n_comp + i].mod_name = project->vendored.items[i];
+        jobs[n_comp + i].exts     = exts;
+    }
+
+    /* Dispatch */
+    for (size_t i = 0; i < n_top; i++) {
+#ifdef _WIN32
+        threads[i] = CreateThread(NULL, 0, resolve_worker, &jobs[i], 0, NULL);
+        if (!threads[i]) resolve_worker(&jobs[i]);
+#else
+        if (pthread_create(&threads[i], NULL, resolve_worker, &jobs[i]) != 0)
+            resolve_worker(&jobs[i]);
+#endif
+    }
+
+    /* Join */
+    for (size_t i = 0; i < n_top; i++) {
+#ifdef _WIN32
+        if (threads[i]) { WaitForSingleObject(threads[i], INFINITE); CloseHandle(threads[i]); }
+#else
+        if (threads[i]) pthread_join(threads[i], NULL);
+#endif
+    }
+
+    /* Merge with dedup: sources by path, includes by path */
+    for (size_t i = 0; i < n_top; i++) {
+        ResolveJob *j = &jobs[i];
+        for (size_t k = 0; k < j->sources.count; k++) {
+            if (!filelist_contains(&ctx->sources, j->sources.paths[k]))
+                now_filelist_push(&ctx->sources, j->sources.paths[k]);
+        }
+        for (size_t k = 0; k < j->dep_includes.count; k++) {
+            if (!filelist_contains(&ctx->dep_includes, j->dep_includes.paths[k]))
+                now_filelist_push(&ctx->dep_includes, j->dep_includes.paths[k]);
+        }
+        now_filelist_free(&j->sources);
+        now_filelist_free(&j->dep_includes);
+        resolve_scope_free(&j->scope);
+    }
+
+    free(threads);
+    free(jobs);
 }
 
 NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
@@ -807,11 +924,27 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     for (size_t i = 0; i < project->sources.include.count; i++)
         now_filelist_push(&ctx->sources, project->sources.include.items[i]);
 
-    /* Resolve components (own modules) and vendored (external deps) */
-    resolve_modules(ctx, basedir, NULL,
-                     project->components.items, project->components.count, exts, 0);
-    resolve_modules(ctx, basedir, NULL,
-                     project->vendored.items, project->vendored.count, exts, 0);
+    /* Resolve components (own modules) and vendored (external deps).
+     * Top-level entries are independent — run each in its own thread with a
+     * local ResolveScope, then merge results into ctx with global dedup. */
+    {
+        size_t n_comp = project->components.count;
+        size_t n_vend = project->vendored.count;
+        size_t n_top  = n_comp + n_vend;
+
+        if (n_top <= 1) {
+            /* Serial path for trivial projects */
+            ResolveScope scope;
+            resolve_scope_init(&scope, &ctx->sources, &ctx->dep_includes);
+            resolve_modules(&scope, basedir, NULL,
+                             project->components.items, n_comp, exts, 0);
+            resolve_modules(&scope, basedir, NULL,
+                             project->vendored.items, n_vend, exts, 0);
+            resolve_scope_free(&scope);
+        } else {
+            resolve_top_parallel(ctx, basedir, project, exts, n_comp, n_vend);
+        }
+    }
     free(exts);
 
     if (ctx->sources.count == 0) {
