@@ -26,14 +26,14 @@ Be aware of what's actually battle-tested before picking a language:
 | Language | Status | Validated on |
 |----------|--------|--------------|
 | **C (C11)** | Production | self-build (77 files), cookbook (62), apennines (286), gut (47) |
-| **C++ (C++17/20)** | Works | Defaults to `src/main/cpp/`; C++20 modules scanner tested; smaller real-world footprint than C |
+| **C++ (C++17/20)** | Works | Distinct Maven layout: `src/main/cpp/` + `src/main/hpp/`; C++20 modules scanner tested; smaller real-world footprint than C |
 | **C + Rust (FFI)** | Works | rustc invoked as `--emit obj --crate-type staticlib`; verified end-to-end |
 | **Go (cgo)** | Experimental | `go build -buildmode=c-archive` wired; untested against real Go projects |
 | **Java** | Experimental | Dedicated `javac` + `java` path; test-project scaffold exists; not exercised against a real project |
 | **asm-gas / asm-nasm** | Experimental | Registered, routes through C toolchain's `${as}`; untested on real asm-heavy projects |
 | **Julia** | Not implemented | Registered in the language list but no compile path; **do not use in CI** yet |
 
-**Rule of thumb**: if your project is C, treat `now` as production-ready. C++ follows the Maven convention — `src/main/cpp/` by default under `langs: ["c++"]` (Java → `src/main/java`, Rust → `src/main/rust`, Go → `src/main/go`). For Rust FFI (C host + Rust `#[no_mangle]` helpers) drop `.rs` files alongside `.c` files in `src/main/c/`. Anything else — prototype locally before wiring up CI.
+**Rule of thumb**: if your project is C, treat `now` as production-ready. C++ follows the Maven convention with its own distinct dirs — `src/main/cpp/` for `.cpp` and `src/main/hpp/` for `.hpp` headers (C++ is not C; sharing `h/c` roots muddles that). Java → `src/main/java/`, Rust → `src/main/rust/`, Go → `src/main/go/`. For Rust FFI (C host + Rust `#[no_mangle]` helpers) drop `.rs` files alongside `.c` files in `src/main/c/`. Anything else — prototype locally before wiring up CI.
 
 ---
 
@@ -300,7 +300,17 @@ All consumers get it on their next run.
 
 ## Troubleshooting
 
-**"cannot scan source directory: src/main/X"** — your sources live elsewhere than the convention. Default directory depends on the primary language (`c` → `src/main/c`, `c++` → `src/main/cpp`, `java` → `src/main/java`, `rust` → `src/main/rust`, `go` → `src/main/go`). Override with `sources: { dir: "your/path" }`.
+**"cannot scan source directory: src/main/X"** — your sources live elsewhere than the convention. Default directory depends on the primary language:
+
+| Lang | `sources.dir` | `sources.headers` | `sources.private` | `tests.dir` |
+|------|---------------|-------------------|-------------------|-------------|
+| c    | `src/main/c`    | `src/main/h`   | `src/main/h/internal`   | `src/test/c`    |
+| c++  | `src/main/cpp`  | `src/main/hpp` | `src/main/hpp/internal` | `src/test/cpp`  |
+| java | `src/main/java` | (none)         | (none)                  | `src/test/java` |
+| rust | `src/main/rust` | (none)         | (none)                  | `src/test/rust` |
+| go   | `src/main/go`   | (none)         | (none)                  | `src/test/go`   |
+
+Override any of these with `sources: { dir: "...", headers: "...", private: "..." }` or `tests: { dir: "..." }`.
 
 **"javac not found (set JAVAC env var)"** — Java support needs `javac` in PATH. The `setup-java` GitHub action installs one. Treat Java support as experimental for now.
 
