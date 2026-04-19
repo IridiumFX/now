@@ -462,6 +462,19 @@ static int has_java_lang(const NowProject *p) {
     return has_lang(p, "java");
 }
 
+/* Default source directory based on the primary language.
+ * Follows Maven-style conventions: src/main/{c,cpp,java,rust,go}/. */
+static const char *default_src_dir(const NowProject *p) {
+    if (p && p->langs.count > 0) {
+        const char *first = p->langs.items[0];
+        if (strcmp(first, "c++")  == 0) return "src/main/cpp";
+        if (strcmp(first, "java") == 0) return "src/main/java";
+        if (strcmp(first, "rust") == 0) return "src/main/rust";
+        if (strcmp(first, "go")   == 0) return "src/main/go";
+    }
+    return "src/main/c";
+}
+
 NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
 #ifdef _WIN32
     /* On Windows with MSVC, detect cl.exe; otherwise assume gcc/mingw */
@@ -920,7 +933,7 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     }
 
     const char *src_dir = project->sources.dir;
-    if (!src_dir) src_dir = "src/main/c";
+    if (!src_dir) src_dir = default_src_dir(project);
 
     int rc = now_discover_sources(basedir, src_dir, exts, &ctx->sources);
 
@@ -3160,7 +3173,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = std_buf;
             }
 
-            const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
+            const char *src_dir_str = p->sources.dir ? p->sources.dir : default_src_dir(p);
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
                 char inc_flag[512];
@@ -3194,7 +3207,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = std_buf;
             }
 
-            const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
+            const char *src_dir_str = p->sources.dir ? p->sources.dir : default_src_dir(p);
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
                 char inc_flag[512];
