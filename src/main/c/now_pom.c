@@ -168,6 +168,55 @@ static void load_strarray(NowStrArray *dst, const PastaValue *arr) {
     }
 }
 
+/* ---- Language-aware defaults ----
+ *
+ * Maven-style directory conventions, keyed off the primary language:
+ *   c    -> src/main/c,   src/main/h,   src/main/h/internal,   src/test/c
+ *   c++  -> src/main/cpp, src/main/hpp, src/main/hpp/internal, src/test/cpp
+ *   java -> src/main/java,            (no headers)           src/test/java
+ *   rust -> src/main/rust,            (no headers)           src/test/rust
+ *   go   -> src/main/go,              (no headers)           src/test/go
+ *
+ * C++ gets fully distinct paths from C on purpose — they are different
+ * languages with different idioms; sharing .h/.c roots muddles that.
+ */
+static void apply_maven_defaults(NowProject *p) {
+    if (!p) return;
+    const char *primary = (p->langs.count > 0) ? p->langs.items[0] : "c";
+    int is_cpp  = (strcmp(primary, "c++")  == 0);
+    int is_java = (strcmp(primary, "java") == 0);
+    int is_rust = (strcmp(primary, "rust") == 0);
+    int is_go   = (strcmp(primary, "go")   == 0);
+
+    if (!p->sources.dir) {
+        if      (is_cpp)  p->sources.dir = strdup("src/main/cpp");
+        else if (is_java) p->sources.dir = strdup("src/main/java");
+        else if (is_rust) p->sources.dir = strdup("src/main/rust");
+        else if (is_go)   p->sources.dir = strdup("src/main/go");
+        else              p->sources.dir = strdup("src/main/c");
+    }
+
+    if (!p->sources.headers) {
+        if      (is_cpp)                      p->sources.headers = strdup("src/main/hpp");
+        else if (is_java || is_rust || is_go) { /* no headers concept */ }
+        else                                  p->sources.headers = strdup("src/main/h");
+    }
+
+    if (!p->sources.private_headers) {
+        if      (is_cpp)                      p->sources.private_headers = strdup("src/main/hpp/internal");
+        else if (is_java || is_rust || is_go) { /* none */ }
+        else                                  p->sources.private_headers = strdup("src/main/h/internal");
+    }
+
+    if (!p->tests.dir) {
+        if      (is_cpp)  p->tests.dir = strdup("src/test/cpp");
+        else if (is_java) p->tests.dir = strdup("src/test/java");
+        else if (is_rust) p->tests.dir = strdup("src/test/rust");
+        else if (is_go)   p->tests.dir = strdup("src/test/go");
+        else              p->tests.dir = strdup("src/test/c");
+    }
+}
+
 /* ---- Section loaders ---- */
 
 static void load_sources(NowSources *dst, const PastaValue *src) {
@@ -516,27 +565,7 @@ NOW_API NowProject *now_project_load(const char *path, NowResult *result) {
         load_strarray(&p->java.classpath, pasta_map_get(java_map, "classpath"));
     }
 
-    /* Apply defaults for sources if not specified */
-    int is_java = 0;
-    if (!p->sources.dir && p->langs.count > 0) {
-        const char *primary = p->langs.items[0];
-        if (strcmp(primary, "c") == 0)
-            p->sources.dir = strdup("src/main/c");
-        else if (strcmp(primary, "c++") == 0)
-            p->sources.dir = strdup("src/main/cpp");
-        else if (strcmp(primary, "java") == 0) {
-            p->sources.dir = strdup("src/main/java");
-            is_java = 1;
-        }
-        else
-            p->sources.dir = strdup("src/main");
-    } else if (p->langs.count > 0 && strcmp(p->langs.items[0], "java") == 0) {
-        is_java = 1;
-    }
-    if (!p->sources.headers && !is_java)
-        p->sources.headers = strdup("src/main/include");
-    if (!p->tests.dir)
-        p->tests.dir = is_java ? strdup("src/test/java") : strdup("src/test/c");
+    apply_maven_defaults(p);
 
     if (result) {
         result->code = NOW_OK;
@@ -620,26 +649,7 @@ NOW_API NowProject *now_project_load_string(const char *input, size_t len,
         }
     }
 
-    int is_java2 = 0;
-    if (!p->sources.dir && p->langs.count > 0) {
-        const char *primary = p->langs.items[0];
-        if (strcmp(primary, "c") == 0)
-            p->sources.dir = strdup("src/main/c");
-        else if (strcmp(primary, "c++") == 0)
-            p->sources.dir = strdup("src/main/cpp");
-        else if (strcmp(primary, "java") == 0) {
-            p->sources.dir = strdup("src/main/java");
-            is_java2 = 1;
-        }
-        else
-            p->sources.dir = strdup("src/main");
-    } else if (p->langs.count > 0 && strcmp(p->langs.items[0], "java") == 0) {
-        is_java2 = 1;
-    }
-    if (!p->sources.headers && !is_java2)
-        p->sources.headers = strdup("src/main/include");
-    if (!p->tests.dir)
-        p->tests.dir = is_java2 ? strdup("src/test/java") : strdup("src/test/c");
+    apply_maven_defaults(p);
 
     if (result) {
         result->code = NOW_OK;

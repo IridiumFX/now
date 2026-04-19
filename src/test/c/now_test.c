@@ -103,7 +103,7 @@ static void test_pom_minimal_string(void) {
     ASSERT_STR(now_project_output_name(p), "demo");
     /* default source dirs */
     ASSERT_STR(now_project_source_dir(p), "src/main/c");
-    ASSERT_STR(now_project_header_dir(p), "src/main/include");
+    ASSERT_STR(now_project_header_dir(p), "src/main/h");
     now_project_free(p);
     PASS();
 }

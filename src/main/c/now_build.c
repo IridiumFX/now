@@ -462,17 +462,15 @@ static int has_java_lang(const NowProject *p) {
     return has_lang(p, "java");
 }
 
-/* Default source directory based on the primary language.
- * Follows Maven-style conventions: src/main/{c,cpp,java,rust,go}/. */
-static const char *default_src_dir(const NowProject *p) {
-    if (p && p->langs.count > 0) {
-        const char *first = p->langs.items[0];
-        if (strcmp(first, "c++")  == 0) return "src/main/cpp";
-        if (strcmp(first, "java") == 0) return "src/main/java";
-        if (strcmp(first, "rust") == 0) return "src/main/rust";
-        if (strcmp(first, "go")   == 0) return "src/main/go";
-    }
-    return "src/main/c";
+/* True if `base` has src/main/c/ or src/main/cpp/ (i.e., is a module
+ * by convention, independent of any now.pasta it may or may not have). */
+static int is_module_dir(const char *base) {
+    int r = 0;
+    char *c   = now_path_join(base, "src/main/c");
+    char *cpp = now_path_join(base, "src/main/cpp");
+    if ((c && now_is_dir(c)) || (cpp && now_is_dir(cpp))) r = 1;
+    free(c); free(cpp);
+    return r;
 }
 
 NOW_API void now_toolchain_resolve(NowToolchain *tc, const NowProject *p) {
@@ -671,17 +669,23 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
         } /* end if (mod_pasta exists) */
 
         {
-            /* Convention source discovery (when no now.pasta handled sources) */
+            /* Convention source discovery (when no now.pasta handled sources).
+             * Try both the C layout (src/main/{c,h}) and the C++ layout
+             * (src/main/{cpp,hpp}) — either (or both) can be present. */
             int has_pasta = mod_pasta && now_path_exists(mod_pasta);
-            char *conv_src = now_path_join(mod_abs, "src/main/c");
-            int has_src = conv_src && now_is_dir(conv_src);
-            free(conv_src);
 
-            if (has_src && !has_pasta) {
-                /* No now.pasta + has sources — leaf module by convention */
+            static const struct { const char *src; const char *hdr; const char *hint; } conv[] = {
+                { "src/main/c",   "src/main/h",   "src/main/h/internal"   },
+                { "src/main/cpp", "src/main/hpp", "src/main/hpp/internal" },
+            };
+            for (size_t k = 0; k < sizeof(conv)/sizeof(conv[0]) && !has_pasta; k++) {
+                char *csrc = now_path_join(mod_abs, conv[k].src);
+                int has_csrc = csrc && now_is_dir(csrc);
+                if (!has_csrc) { free(csrc); continue; }
+
                 NowFileList mfl;
                 now_filelist_init(&mfl);
-                if (now_discover_sources(mod_abs, "src/main/c", exts, &mfl) == 0) {
+                if (now_discover_sources(mod_abs, conv[k].src, exts, &mfl) == 0) {
                     for (size_t f = 0; f < mfl.count; f++) {
                         char *rel = now_path_join(mod, mfl.paths[f]);
                         if (rel) { now_filelist_push(scope->sources, rel); free(rel); }
@@ -689,24 +693,20 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
                 }
                 now_filelist_free(&mfl);
 
-                /* Add include paths by convention */
-                char *conv_hdr = now_path_join(mod_abs, "src/main/h");
-                if (conv_hdr && now_is_dir(conv_hdr))
-                    push_include(scope->dep_includes, conv_hdr);
-                free(conv_hdr);
+                char *chdr = now_path_join(mod_abs, conv[k].hdr);
+                if (chdr && now_is_dir(chdr)) push_include(scope->dep_includes, chdr);
+                free(chdr);
 
-                char *conv_hdr_int = now_path_join(mod_abs, "src/main/h/internal");
-                if (conv_hdr_int && now_is_dir(conv_hdr_int))
-                    push_include(scope->dep_includes, conv_hdr_int);
-                free(conv_hdr_int);
+                char *chdr_int = now_path_join(mod_abs, conv[k].hint);
+                if (chdr_int && now_is_dir(chdr_int)) push_include(scope->dep_includes, chdr_int);
+                free(chdr_int);
 
-                char *conv_src2 = now_path_join(mod_abs, "src/main/c");
-                if (conv_src2 && now_is_dir(conv_src2))
-                    push_include(scope->dep_includes, conv_src2);
-                free(conv_src2);
+                if (csrc) push_include(scope->dep_includes, csrc);
+                free(csrc);
             }
 
-            /* Auto-discover sub-components: subdirs that have src/main/c/ */
+            /* Auto-discover sub-components: subdirs that have src/main/c/
+             * or src/main/cpp/. */
             {
 #ifdef _WIN32
                 char pattern[1024];
@@ -718,8 +718,7 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
                         if (fd.cFileName[0] == '.') continue;
                         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
                         char *sub_abs = now_path_join(mod_abs, fd.cFileName);
-                        char *sub_src = sub_abs ? now_path_join(sub_abs, "src/main/c") : NULL;
-                        if (sub_src && now_is_dir(sub_src)) {
+                        if (sub_abs && is_module_dir(sub_abs)) {
                             /* This subdir is a sub-component — recurse */
                             char *sub_mod = now_path_join(mod, fd.cFileName);
                             if (sub_mod) {
@@ -729,7 +728,6 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
                                 free(sub_mod);
                             }
                         }
-                        free(sub_src);
                         free(sub_abs);
                     } while (FindNextFileA(hFind, &fd));
                     FindClose(hFind);
@@ -741,8 +739,7 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
                     while ((entry = readdir(d)) != NULL) {
                         if (entry->d_name[0] == '.') continue;
                         char *sub_abs = now_path_join(mod_abs, entry->d_name);
-                        char *sub_src = sub_abs ? now_path_join(sub_abs, "src/main/c") : NULL;
-                        if (sub_src && now_is_dir(sub_src)) {
+                        if (sub_abs && is_module_dir(sub_abs)) {
                             char *sub_mod = now_path_join(mod, entry->d_name);
                             if (sub_mod) {
                                 char *sub_paths[] = { sub_mod };
@@ -751,7 +748,6 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
                                 free(sub_mod);
                             }
                         }
-                        free(sub_src);
                         free(sub_abs);
                     }
                     closedir(d);
@@ -933,7 +929,7 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     }
 
     const char *src_dir = project->sources.dir;
-    if (!src_dir) src_dir = default_src_dir(project);
+    if (!src_dir) src_dir = "src/main/c";  /* safety fallback — pom loader already sets this */
 
     int rc = now_discover_sources(basedir, src_dir, exts, &ctx->sources);
 
@@ -3173,7 +3169,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = std_buf;
             }
 
-            const char *src_dir_str = p->sources.dir ? p->sources.dir : default_src_dir(p);
+            const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
                 char inc_flag[512];
@@ -3207,7 +3203,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = std_buf;
             }
 
-            const char *src_dir_str = p->sources.dir ? p->sources.dir : default_src_dir(p);
+            const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
                 char inc_flag[512];
