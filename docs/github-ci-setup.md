@@ -1,85 +1,57 @@
 # Building with `now` on GitHub Actions
 
-Step-by-step guide to replace CMake/Ninja CI with `now` for all IridiumFX projects.
+Step-by-step guide for adding `now` to a GitHub Actions CI pipeline.
 
 ---
 
-## Part 1 — Set Up the now-action Repository
+## TL;DR
 
-This is done once. It creates the GitHub Action that all projects use.
+If your repo has a `now.pasta` in the root and follows the convention layout (`src/main/c/`, `src/main/h/`), the workflow is three lines:
 
-### 1.1 Create the repository
-
-```bash
-cd C:\Users\Iridium\Projects\now-action
-git remote add origin https://github.com/IridiumFX/now-action.git
-git push -u origin master
+```yaml
+- uses: actions/checkout@v4
+  with: { submodules: recursive }
+- uses: IridiumFX/now-action@v1
+  with: { command: ci }
 ```
 
-### 1.2 Tag the release
-
-```bash
-git tag v1
-git push origin v1
-```
-
-The `v1` tag is what projects reference in their workflows (`uses: IridiumFX/now-action@v1`).
+`now ci` runs build + test and reports results. That's the whole pipeline for a well-structured project.
 
 ---
 
-## Part 2 — Publish now Binaries
+## Language support
 
-The action downloads a pre-built `now` binary. We need to create a GitHub release with binaries for each platform.
+Be aware of what's actually battle-tested before picking a language:
 
-### 2.1 Push the now repository (if not already on GitHub)
+| Language | Status | Validated on |
+|----------|--------|--------------|
+| **C (C11)** | Production | self-build (77 files), cookbook (62), apennines (286), gut (47) |
+| **C++ (C++17/20)** | Works | C++20 modules scanner tested; smaller real-world footprint than C |
+| **C + Rust (FFI)** | Works | rustc invoked as `--emit obj --crate-type staticlib`; verified end-to-end |
+| **Go (cgo)** | Experimental | `go build -buildmode=c-archive` wired; untested against real Go projects |
+| **Java** | Experimental | Dedicated `javac` + `java` path; test-project scaffold exists; not exercised against a real project |
+| **asm-gas / asm-nasm** | Experimental | Registered, routes through C toolchain's `${as}`; untested on real asm-heavy projects |
+| **Julia** | Not implemented | Registered in the language list but no compile path; **do not use in CI** yet |
 
-```bash
-cd C:\Users\Iridium\Projects\now
-git remote add origin https://github.com/IridiumFX/now.git
-git push -u origin main
-```
-
-### 2.2 Tag and push to trigger the release workflow
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-This triggers `.github/workflows/release.yml` which:
-- Builds static `now` binaries on Linux (gcc), macOS (clang), Windows (gcc), FreeBSD
-- Runs the test suite on each platform
-- Uploads `now-linux-x64`, `now-macos-arm64`, `now-windows-x64.exe`, `now-freebsd-x64` as release assets
-
-### 2.3 Verify the release
-
-Go to `https://github.com/IridiumFX/now/releases/tag/v1.0.0` and confirm all 4 binaries are listed.
+**Rule of thumb**: if your project is C, treat `now` as production-ready. For C++, expect minor wrinkles (`sources.dir` defaults to `src/main/c` even under `langs: ["c++"]` — set it explicitly). For Rust FFI (C host + Rust `#[no_mangle]` helpers), it works but the integration surface is narrow. Anything else — prototype locally before wiring up CI.
 
 ---
 
-## Part 3 — Enable CI on the now Repository
+## Initial setup (one-time, already done)
 
-The now repo already has `.github/workflows/ci.yml`. Once pushed, every commit to `main` and every PR will:
+The `IridiumFX/now-action@v1` action and `now` release binaries are already published. If you're bootstrapping a fresh `now` fork, the steps are:
 
-1. Build with CMake on Linux, macOS, Windows, FreeBSD
-2. Run the 313-test suite
-3. Self-build (now builds itself from `now.pasta`)
+1. Push `now-action` repo, tag `v1`.
+2. Push `now` repo, tag `v1.0.0` — triggers `.github/workflows/release.yml` which uploads `now-{linux-x64, macos-arm64, windows-x64.exe, freebsd-x64}` assets.
+3. Projects reference the action as `uses: IridiumFX/now-action@v1`; it downloads the matching binary on the runner.
 
-No action needed — it activates automatically when pushed to GitHub.
+Skip this section unless you're maintaining the action itself.
 
 ---
 
-## Part 4 — Instructions for the Cookbook Team
+## Per-project workflow template
 
-Send this to the cookbook team. They need a `now.pasta` in their repo root and a workflow file.
-
-### 4.1 Add now.pasta to the cookbook repository
-
-The cookbook team already has a working `now.pasta` from the build validation. Commit it to their repo root.
-
-### 4.2 Add the CI workflow
-
-Create `.github/workflows/ci.yml`:
+Starter CI file for a C/C++ project. Place at `.github/workflows/ci.yml`:
 
 ```yaml
 name: CI
@@ -92,8 +64,9 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -101,152 +74,247 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build
+      - name: Build and test
         uses: IridiumFX/now-action@v1
         with:
-          command: build
-          verbose: true
-
-      - name: Test
-        uses: IridiumFX/now-action@v1
-        with:
-          command: test
+          command: ci
 
       - name: Upload binary
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cookbook-${{ matrix.os }}
+          name: ${{ github.event.repository.name }}-${{ matrix.os }}
           path: target/bin/
 ```
 
-### 4.3 Pre-built libsodium
-
-Cookbook uses `link.archives` for libsodium. The `.a` file needs to exist in the repo (or be built in a prior step). Options:
-
-**Option A** — Commit the pre-built archive:
-```
-vendor/libsodium/libsodium.a    # Linux
-vendor/libsodium/libsodium-win.a  # Windows
-```
-
-Then use a conditional in `now.pasta` or build separate per-platform archives.
-
-**Option B** — Build libsodium in CI before `now build`:
-```yaml
-      - name: Build libsodium
-        run: |
-          cd vendor/libsodium
-          ./configure --enable-static --disable-shared
-          make -j$(nproc)
-
-      - name: Build cookbook
-        uses: IridiumFX/now-action@v1
-        with:
-          command: build
-```
-
-### 4.4 Cookbook-specific notes
-
-- `sources.exclude` filters `cookbook_import.c` and `cookbook_db_postgres.c` — these are separate tools
-- Windows link libs: `ws2_32`, `bcrypt`, `advapi32` — already in `now.pasta`
-- macOS may need different system libs — test and adjust `link.libs` per platform if needed
+Drop-in works for any project that compiles cleanly with `now build` locally.
 
 ---
 
-## Part 5 — Instructions for the Apennines Team
+## Writing your `now.pasta`
 
-Apennines is the simplest — zero external deps, pure C11.
+Three patterns cover ~95% of repos.
 
-### 5.1 Add now.pasta
+### Pattern 1 — Pure convention layout (simplest)
 
-They already have one (37 lines). Commit it to the repo root.
+```
+your-project/
+  now.pasta
+  src/main/c/          <- sources (.c, .cpp)
+  src/main/h/          <- public headers
+  src/main/h/internal/ <- internal headers
+  src/test/c/          <- test sources
+```
 
-### 5.2 Add the CI workflow
+```pasta
+{
+  group:    "dev.example",
+  artifact: "myproject",
+  version:  "1.0.0",
+  lang:     "c",
+  compile:  { std: "c11", warnings: ["Wall", "Wextra"] },
+  link:     { output: "executable", libs: ["m", "pthread"] }
+}
+```
 
-Create `.github/workflows/ci.yml`:
+No file list needed — `now` walks `src/main/c/` recursively.
+
+### Pattern 2 — With a flat vendored dependency (cookbook/gut style)
+
+When you vendor a library with non-Maven layout (e.g. `lib/apennines/c/*.c`):
+
+```pasta
+{
+  group:    "dev.example",
+  artifact: "myproject",
+  version:  "1.0.0",
+  lang:     "c",
+  sources: {
+    dir:     "src/main/c",
+    headers: "src/main/h",
+    include: [
+      "lib/apennines/c/addr.c",
+      "lib/apennines/c/buf.c",
+      "lib/apennines/c/http_client.c"
+      /* ... list each vendored .c file ... */
+    ]
+  },
+  compile: {
+    std: "c11",
+    warnings: ["Wall", "Wextra"],
+    includes: ["lib/apennines/h"]
+  },
+  link: { libs: ["ws2_32", "bcrypt"] }
+}
+```
+
+`sources.include` accepts explicit file paths relative to the project root. Use this when the vendor tree is flat (no `src/main/c` inside).
+
+### Pattern 3 — Sibling components (now's own layout)
+
+When your own project has logical subsystems:
+
+```
+your-project/
+  now.pasta
+  src/main/c/             <- core
+  components/
+    enterprise/src/main/c/
+    export/src/main/c/
+    cli/src/main/c/
+```
+
+```pasta
+{
+  ...
+  components: [
+    "components/enterprise",
+    "components/export",
+    "components/cli"
+  ]
+}
+```
+
+Each component follows convention layout. No leaf `now.pasta` needed if the component is just sources.
+
+### Starting from CMake
+
+If you have a CMakeLists.txt, run:
+
+```bash
+now import:cmake CMakeLists.txt now.pasta
+```
+
+Read-only — generates a starter descriptor you then curate. See `docs/migration-guide.md` for what the importer does and doesn't handle.
+
+---
+
+## Real-world examples
+
+### Cookbook (artifact registry, ~60 C files)
 
 ```yaml
-name: CI
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
 jobs:
   build:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build & test
-        uses: IridiumFX/now-action@v1
-        with:
-          command: ci
+        with: { submodules: recursive }
+      - uses: IridiumFX/now-action@v1
+        with: { command: ci }
 ```
 
-That's it. 286 files, 18 seconds, zero configuration beyond the `now.pasta` they already have.
+Cookbook's `now.pasta` uses `sources.include` to pull in vendored apennines (pattern 2). After its libsodium→apennines-crypto migration, no pre-built archives are needed. CI is three lines on three OSes.
 
-### 5.3 Apennines-specific notes
+### Apennines (Nova OS base runtime, 286 C files)
 
-- Recursive source discovery handles all t1/ through t7/ subdirectories automatically
-- No submodules needed (zero deps)
-- Windows libs (`ws2_32`, `bcrypt`, `winmm`) already in their `now.pasta`
-- Static build variant: change `output.type` to `"static"` or use profiles
+Zero external dependencies. Cleanest possible pasta (~37 lines, pattern 1). Works unmodified on Linux/macOS/Windows. Cold build ~18s on 4 cores — 6.6× faster than CMake+Ninja on the same tree.
+
+### Gut (git reimplementation, 15 gut + 32 vendored apennines = 47 files)
+
+Uses `sources.include` to pull 32 apennines files from a flat `lib/apennines/c/`. Windows link libs (`ws2_32`, `bcrypt`) declared explicitly. Cold build ~16s, within ninja's run-to-run noise band. Warm-ccache rebuilds come in under 1s.
+
+All three projects ship with the same three-line workflow.
 
 ---
 
-## Part 6 — Ongoing Maintenance
+## Useful `now` commands in CI
 
-### Updating now
+| Command | What it does |
+|---------|--------------|
+| `now build` | compile + link |
+| `now test` | build + run tests (`src/test/c/`) |
+| `now ci` | build + test + structured exit codes (use this in workflows) |
+| `now clean` | wipe `target/` (preserves `~/.now/dirwalk/` and `~/.now/cache/`) |
+| `now cache:stats` | show local ccache hit rate / size |
+| `now cache:remote-stats` | ping remote object cache (if configured) |
+| `now sbom` | emit CycloneDX JSON SBOM for supply-chain tracking |
+| `now import:cmake` | one-shot CMake→now.pasta converter |
+| `now verify` | signature + trust policy check on pulled dependencies |
 
-When a new `now` version is released:
+`now ci` is the right default for GitHub Actions — it emits JSON/Pasta/text formats (`--output <fmt>`) for downstream parsing.
 
-```bash
-cd C:\Users\Iridium\Projects\now
-git tag v1.0.1
-git push origin v1.0.1
+---
+
+## Performance expectations on GitHub runners
+
+GitHub's default runners are 4-core. Measured on comparable hardware:
+
+| Project | Files | Cold build | Warm ccache | No-op |
+|---------|-------|-----------|-------------|-------|
+| gut | 47 | ~16s | ~0.7s | ~0.1s |
+| cookbook | 62 | ~30s | — | — |
+| now (self) | 77 | ~24s | ~1.2s | ~0.1s |
+| apennines | 286 | ~18s | — | — |
+
+Two things make the steady-state fast:
+- **ccache**: objects cached at `~/.now/cache/objects/` survive across jobs if you cache that dir (GitHub `actions/cache@v4` on `~/.now/cache`).
+- **Dirwalk cache**: structure survives `now clean` (stored under `~/.now/dirwalk/`), so "clean rebuild" doesn't re-walk the tree.
+
+Both are automatic — no configuration needed beyond caching `~/.now/` between runs.
+
+### Caching `~/.now/` on GitHub Actions
+
+```yaml
+      - uses: actions/cache@v4
+        with:
+          path: ~/.now
+          key: now-${{ matrix.os }}-${{ hashFiles('now.pasta') }}
+          restore-keys: |
+            now-${{ matrix.os }}-
+
+      - uses: IridiumFX/now-action@v1
+        with: { command: ci }
 ```
 
-The release workflow builds and uploads new binaries. Projects using `now-version: latest` (the default) pick up the new version automatically.
+First run after a `now.pasta` change: cold. Every subsequent run: warm ccache → near-instant.
 
-### Updating now-action
+---
 
-If the action logic changes:
+## Updating `now` or `now-action`
+
+**New `now` release:**
 
 ```bash
-cd C:\Users\Iridium\Projects\now-action
-# make changes to action.yml
-git add -A && git commit -m "Update action"
-git tag -f v1  # force-update the v1 tag
-git push origin v1 --force
+cd now
+git tag v1.0.1 && git push origin v1.0.1
 ```
 
-All projects using `@v1` get the update on their next run.
+The release workflow builds and uploads new binaries. Workflows using `uses: IridiumFX/now-action@v1` automatically pick up the latest release (action points at the `v1` tag, which tracks the latest `v1.x.y` release).
 
-### Adding a new project
+**Action logic change:**
 
-For any C/C++/Rust/Go/Julia project:
+```bash
+cd now-action
+# edit action.yml
+git commit -am "Update action"
+git tag -f v1 && git push origin v1 --force
+```
 
-1. Run `now init` in the project root (auto-detects languages)
-2. Run `now build` locally to verify
-3. Copy the workflow template from Part 5 into `.github/workflows/ci.yml`
-4. Push
+All consumers get it on their next run.
+
+---
+
+## Troubleshooting
+
+**"cannot scan source directory: src/main/c"** — either your sources live elsewhere (set `sources.dir`) or you're using `langs: ["c++"]` which doesn't yet default to `src/main/cpp` gracefully. Set `sources: { dir: "src/main/c" }` explicitly.
+
+**"javac not found (set JAVAC env var)"** — Java support needs `javac` in PATH. The `setup-java` GitHub action installs one. Treat Java support as experimental for now.
+
+**Rust can't find `rustc`** — add `- uses: dtolnay/rust-toolchain@stable` before the `now-action` step. `rustc` must be in PATH at build time.
+
+**Linker errors for platform-specific libs** — our autodetection doesn't cover everything. Declare them explicitly in `link.libs`. Common Windows additions: `ws2_32`, `bcrypt`, `advapi32`, `userenv`.
+
+**ccache misses on CI but hits locally** — make sure `actions/cache@v4` restores `~/.now/` before the `now-action` step and saves it after. GitHub auto-saves only on a successful job.
 
 ---
 
 ## Summary
 
-| Step | Who | What | Time |
-|------|-----|------|------|
-| 1 | You | Push `now-action` repo, tag `v1` | 2 min |
-| 2 | You | Push `now` repo, tag `v1.0.0` (triggers release build) | 5 min |
-| 3 | Cookbook | Commit `now.pasta` + workflow, handle libsodium | 15 min |
-| 4 | Apennines | Commit `now.pasta` + workflow | 5 min |
-| 5 | Everyone | Verify green builds on GitHub | Watch |
-
-**Result**: Three projects building on GitHub CI with `now`. No CMake, no Ninja, no Makefiles. One `now.pasta` per project, one `uses: IridiumFX/now-action@v1` per workflow.
+- One `now.pasta` at the repo root, one workflow file.
+- `now ci` is the right default command.
+- Cache `~/.now/` between runs for ~20× warm-build speedup.
+- C is production. Rust (FFI) works. C++ works with a tweak. Go/Java/asm are experimental; Julia is not yet implemented.
