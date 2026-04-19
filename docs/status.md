@@ -1,9 +1,9 @@
 # now — v1.0 Release Candidate
 
-**Version**: 1.0.0-rc1
-**Date**: 2026-03-21
+**Version**: 1.0.0-rc2
+**Date**: 2026-04-19
 **Tests**: 313 passing
-**Languages**: C, C++, C++20 modules, asm-gas, asm-nasm, Java, Rust, Go, Julia
+**Languages**: C (production) · C++ (works) · Rust FFI (works) · Go / Java / asm (experimental) · Julia (not yet implemented)
 
 ---
 
