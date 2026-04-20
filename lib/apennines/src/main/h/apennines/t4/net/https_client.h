@@ -67,4 +67,11 @@ APENNINES_API unsigned long https_client_pool_stats(u64 *active, u64 *idle,
 APENNINES_API unsigned long https_response_free(https_response *resp);
 APENNINES_API unsigned long https_client_destroy(https_client *c);
 
+/* ---- Upload ---- */
+APENNINES_API unsigned long https_client_upload(https_client *c, const char *url,
+                                                 const char *file_path,
+                                                 const char *content_type,
+                                                 https_progress_fn progress,
+                                                 void *ctx);
+
 #endif

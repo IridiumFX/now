@@ -1142,3 +1142,110 @@ unsigned long chacha20_poly1305_decrypt(u8 *out,
     chacha20_xor_stream(out, in, in_len, key32, nonce12, 1);
     return 0;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   XChaCha20 / XChaCha20-Poly1305 (CFRG draft-irtf-cfrg-xchacha)
+   ════════════════════════════════════════════════════════════════ */
+
+/* HChaCha20: key-derivation mode of ChaCha20. Input is a 32-byte key
+ * and a 16-byte nonce; runs 20 rounds on the state WITHOUT adding
+ * back the initial state, then returns the first 128 bits and last
+ * 128 bits of the result as a 32-byte subkey.
+ *
+ * Exposed as the public API `hchacha20` below; keeping this static
+ * helper for internal composition with XChaCha20. */
+static void hchacha20_subkey(u8 out[32], const u8 key[32], const u8 nonce16[16]) {
+    u32 s[16];
+    int i;
+    s[0] = 0x61707865u;
+    s[1] = 0x3320646eu;
+    s[2] = 0x79622d32u;
+    s[3] = 0x6b206574u;
+    for (i = 0; i < 8; i++) s[4 + i]  = load32_le(key + 4 * i);
+    for (i = 0; i < 4; i++) s[12 + i] = load32_le(nonce16 + 4 * i);
+    for (i = 0; i < 10; i++) {
+        QR(s[0], s[4], s[ 8], s[12]);
+        QR(s[1], s[5], s[ 9], s[13]);
+        QR(s[2], s[6], s[10], s[14]);
+        QR(s[3], s[7], s[11], s[15]);
+        QR(s[0], s[5], s[10], s[15]);
+        QR(s[1], s[6], s[11], s[12]);
+        QR(s[2], s[7], s[ 8], s[13]);
+        QR(s[3], s[4], s[ 9], s[14]);
+    }
+    /* NO state-add-back: this is what distinguishes HChaCha20 from the
+     * regular ChaCha20 block function. */
+    for (i = 0; i < 4; i++) store32_le(out + 4 * i,      s[i]);
+    for (i = 0; i < 4; i++) store32_le(out + 16 + 4 * i, s[12 + i]);
+}
+
+unsigned long hchacha20(u8 out_subkey[32], const u8 key32[32],
+                         const u8 nonce16[16]) {
+    if (!out_subkey) return 1;
+    if (!key32)      return 2;
+    if (!nonce16)    return 3;
+    hchacha20_subkey(out_subkey, key32, nonce16);
+    return 0;
+}
+
+/* Build the derived (subkey, 12-byte nonce) pair from a 24-byte nonce.
+ * Sub-nonce = 4 zero bytes || nonce[16..23]. */
+static void xchacha20_derive(u8 subkey[32], u8 subnonce[12],
+                             const u8 key32[32], const u8 nonce24[24]) {
+    hchacha20_subkey(subkey, key32, nonce24);
+    subnonce[0] = subnonce[1] = subnonce[2] = subnonce[3] = 0;
+    memcpy(subnonce + 4, nonce24 + 16, 8);
+}
+
+unsigned long xchacha20_encrypt(u8 *out, const u8 *key32, const u8 *nonce24,
+                                u32 counter, const u8 *in, u64 in_len) {
+    u8 subkey[32];
+    u8 subnonce[12];
+    if (!out)     return 1;
+    if (!key32)   return 2;
+    if (!nonce24) return 3;
+    if (in_len > 0 && !in) return 4;
+    xchacha20_derive(subkey, subnonce, key32, nonce24);
+    chacha20_xor_stream(out, in, in_len, subkey, subnonce, counter);
+    memset(subkey, 0, sizeof(subkey));
+    return 0;
+}
+
+unsigned long xchacha20_poly1305_encrypt(u8 *out, u8 *tag16,
+                                          const u8 *key32,
+                                          const u8 *nonce24,
+                                          const u8 *aad, u64 aad_len,
+                                          const u8 *in, u64 in_len) {
+    u8 subkey[32];
+    u8 subnonce[12];
+    unsigned long rc;
+    if (!out)     return 1;
+    if (!key32)   return 2;
+    if (!nonce24) return 3;
+    if (!tag16)   return 4;
+    xchacha20_derive(subkey, subnonce, key32, nonce24);
+    rc = chacha20_poly1305_encrypt(out, tag16, subkey, subnonce,
+                                    aad, aad_len, in, in_len);
+    memset(subkey, 0, sizeof(subkey));
+    return rc;
+}
+
+unsigned long xchacha20_poly1305_decrypt(u8 *out,
+                                          const u8 *key32,
+                                          const u8 *nonce24,
+                                          const u8 *aad, u64 aad_len,
+                                          const u8 *in, u64 in_len,
+                                          const u8 *tag16) {
+    u8 subkey[32];
+    u8 subnonce[12];
+    unsigned long rc;
+    if (!out)     return 1;
+    if (!key32)   return 2;
+    if (!nonce24) return 3;
+    if (!tag16)   return 4;
+    xchacha20_derive(subkey, subnonce, key32, nonce24);
+    rc = chacha20_poly1305_decrypt(out, subkey, subnonce,
+                                    aad, aad_len, in, in_len, tag16);
+    memset(subkey, 0, sizeof(subkey));
+    return rc;
+}

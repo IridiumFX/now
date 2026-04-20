@@ -27,4 +27,18 @@ APENNINES_API unsigned long addr_ipv6_parse(ipv6_addr *out, const char *str);
 APENNINES_API unsigned long addr_ipv6_format(char *out, u64 out_cap, const ipv6_addr *addr);
 APENNINES_API unsigned long addr_sockaddr_create(net_sock_addr *out, const char *host, u16 port);
 
+/* Resolve hostname to IPv4 addresses via getaddrinfo().
+ * On success, *out receives a heap-allocated array of ipv4_addr and *out_count
+ * the number of entries; the caller must free(*out).
+ * If no A-records are returned, *out is set to NULL and *out_count to 0 (hatch 5).
+ * Hatches:
+ *   1 = out is NULL
+ *   2 = out_count is NULL
+ *   3 = host is NULL
+ *   4 = getaddrinfo() resolution failed
+ *   5 = no IPv4 addresses returned
+ *   6 = allocation failed
+ */
+APENNINES_API unsigned long addr_resolve(ipv4_addr **out, u64 *out_count, const char *host);
+
 #endif /* APENNINES_T2_ADDR_H */

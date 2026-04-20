@@ -275,16 +275,84 @@ APENNINES_API unsigned long x509_parse(x509_cert *out,
 }
 
 /* ------------------------------------------------------------------ */
-/*  x509_verify_chain — stub for T3 PKI                              */
+/*  x509_verify_chain                                                 */
+/*                                                                     */
+/*  Walks from the leaf cert up to a trusted CA root in ca_bundle.     */
+/*  *out = 0 means chain valid, *out = non-zero = reason code:         */
+/*    1 = issuer not found in bundle                                   */
+/*    2 = chain exceeds max depth (16)                                 */
+/*    3 = root is not self-signed                                      */
+/*  Hatches: 1=out null, 2=cert null, 3=ca_bundle null with count>0   */
 /* ------------------------------------------------------------------ */
 
 APENNINES_API unsigned long x509_verify_chain(unsigned long *out,
                                               const x509_cert *cert,
                                               const x509_cert *ca_bundle,
                                               u64 ca_count) {
-    (void)cert; (void)ca_bundle; (void)ca_count;
-    if (!out) return 1;
-    return 99; /* Not implemented — T3 PKI module */
+    if (!out)  return 1;
+    if (!cert) return 2;
+    if (!ca_bundle && ca_count > 0) return 3;
+
+    *out = 0;
+
+    /* Self-signed leaf with no CA bundle — accept if issuer==subject */
+    if (ca_count == 0) {
+        if (cert->issuer_len == cert->subject_len && cert->issuer &&
+            cert->subject &&
+            memcmp(cert->issuer, cert->subject, (size_t)cert->issuer_len) == 0) {
+            *out = 0;
+        } else {
+            *out = 1;
+        }
+        return 0;
+    }
+
+    /* Walk the chain from leaf upward.  At each step, find the CA whose
+       subject matches the current cert's issuer. */
+    const x509_cert *current = cert;
+    for (int depth = 0; depth < 16; depth++) {
+        /* Check if current cert is self-signed — we've reached a root */
+        if (current->issuer_len == current->subject_len &&
+            current->issuer && current->subject &&
+            memcmp(current->issuer, current->subject,
+                   (size_t)current->issuer_len) == 0) {
+            /* Verify this root is in the trusted bundle */
+            int trusted = 0;
+            for (u64 i = 0; i < ca_count; i++) {
+                if (ca_bundle[i].subject_len == current->subject_len &&
+                    ca_bundle[i].subject && current->subject &&
+                    memcmp(ca_bundle[i].subject, current->subject,
+                           (size_t)current->subject_len) == 0) {
+                    trusted = 1;
+                    break;
+                }
+            }
+            *out = trusted ? 0 : 1;
+            return 0;
+        }
+
+        /* Find issuer in the CA bundle */
+        const x509_cert *issuer_cert = NULL;
+        for (u64 i = 0; i < ca_count; i++) {
+            if (ca_bundle[i].subject_len == current->issuer_len &&
+                ca_bundle[i].subject && current->issuer &&
+                memcmp(ca_bundle[i].subject, current->issuer,
+                       (size_t)current->issuer_len) == 0) {
+                issuer_cert = &ca_bundle[i];
+                break;
+            }
+        }
+
+        if (!issuer_cert) {
+            *out = 1;
+            return 0;
+        }
+
+        current = issuer_cert;
+    }
+
+    *out = 2; /* chain too long */
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -497,5 +565,155 @@ APENNINES_API unsigned long x509_destroy(x509_cert *cert) {
         free(cert->der_data);
     }
     memset(cert, 0, sizeof(*cert));
+    return 0;
+}
+/* ------------------------------------------------------------------ */
+/*  PKCS#10 CSR (RFC 2986)                                            */
+/* ------------------------------------------------------------------ */
+/*
+ *  CertificationRequest ::= SEQUENCE {
+ *      certificationRequestInfo  CertificationRequestInfo,
+ *      signatureAlgorithm        AlgorithmIdentifier,
+ *      signature                 BIT STRING
+ *  }
+ *
+ *  CertificationRequestInfo ::= SEQUENCE {
+ *      version                   INTEGER { v1(0) },
+ *      subject                   Name,
+ *      subjectPKInfo             SubjectPublicKeyInfo,
+ *      attributes            [0] Attributes
+ *  }
+ *
+ *  We accept the already-DER-encoded Name and SubjectPublicKeyInfo
+ *  blobs from the caller and assemble the surrounding structure.
+ */
+
+/* Build a CertificationRequestInfo (TBS) DER blob. */
+APENNINES_API unsigned long x509_csr_create(u8 **out, u64 *out_len,
+                                            const u8 *subject_der,
+                                            u64 subject_len,
+                                            const u8 *pubkey_der,
+                                            u64 pubkey_len) {
+    if (!out)         return 1;
+    if (!out_len)     return 2;
+    if (!subject_der) return 3;
+    if (!pubkey_der)  return 4;
+
+    *out     = NULL;
+    *out_len = 0;
+
+    unsigned long rc;
+    buf inner;
+    rc = buf_create(&inner, 32 + subject_len + pubkey_len);
+    if (rc) return 5;
+
+    /* version  INTEGER 0 (v1) */
+    {
+        u8 zero = 0x00;
+        rc = asn1_der_encode_integer(&inner, &zero, 1);
+        if (rc) { buf_destroy(&inner); return 5; }
+    }
+
+    /* subject  Name — already DER-encoded; pass through verbatim */
+    if (subject_len > 0) {
+        rc = buf_append(&inner, (u8 *)subject_der, subject_len);
+        if (rc) { buf_destroy(&inner); return 5; }
+    }
+
+    /* subjectPKInfo  SubjectPublicKeyInfo — already DER-encoded */
+    if (pubkey_len > 0) {
+        rc = buf_append(&inner, (u8 *)pubkey_der, pubkey_len);
+        if (rc) { buf_destroy(&inner); return 5; }
+    }
+
+    /* attributes [0] IMPLICIT SET OF Attribute — empty */
+    rc = asn1_der_encode(&inner, ASN1_TAG_CONTEXT_0, NULL, 0);
+    if (rc) { buf_destroy(&inner); return 5; }
+
+    /* Wrap everything in an outer SEQUENCE. */
+    buf outer;
+    rc = buf_create(&outer, inner.len + 16);
+    if (rc) { buf_destroy(&inner); return 5; }
+
+    rc = asn1_der_encode_sequence(&outer, inner.data, inner.len);
+    buf_destroy(&inner);
+    if (rc) { buf_destroy(&outer); return 5; }
+
+    /* Hand the bytes off to the caller as a plain malloc'd blob.  We copy
+     * so the lifecycle is independent of our internal buf allocator. */
+    u8 *result = (u8 *)malloc((size_t)outer.len);
+    if (!result) { buf_destroy(&outer); return 5; }
+    memcpy(result, outer.data, (size_t)outer.len);
+    *out     = result;
+    *out_len = outer.len;
+    buf_destroy(&outer);
+
+    return 0;
+}
+
+/* Wrap TBS + AlgorithmIdentifier + signature into a CertificationRequest. */
+APENNINES_API unsigned long x509_csr_sign(u8 **out, u64 *out_len,
+                                          const u8 *tbs, u64 tbs_len,
+                                          const u8 *sig_algo_der,
+                                          u64 sig_algo_len,
+                                          const u8 *signature,
+                                          u64 sig_len) {
+    if (!out)          return 1;
+    if (!out_len)      return 2;
+    if (!tbs)          return 3;
+    if (!sig_algo_der) return 4;
+    if (!signature)    return 5;
+
+    *out     = NULL;
+    *out_len = 0;
+
+    unsigned long rc;
+
+    /* Build the BIT STRING contents: one leading "unused bits" byte (0)
+     * followed by the raw signature octets. */
+    buf sig_bits;
+    rc = buf_create(&sig_bits, sig_len + 1);
+    if (rc) return 6;
+    rc = buf_append_byte(&sig_bits, 0x00);
+    if (rc) { buf_destroy(&sig_bits); return 6; }
+    if (sig_len > 0) {
+        rc = buf_append(&sig_bits, (u8 *)signature, sig_len);
+        if (rc) { buf_destroy(&sig_bits); return 6; }
+    }
+
+    /* Assemble the SEQUENCE body: tbs || AlgorithmIdentifier || BIT STRING */
+    buf body;
+    rc = buf_create(&body, tbs_len + sig_algo_len + sig_bits.len + 8);
+    if (rc) { buf_destroy(&sig_bits); return 6; }
+
+    if (tbs_len > 0) {
+        rc = buf_append(&body, (u8 *)tbs, tbs_len);
+        if (rc) { buf_destroy(&body); buf_destroy(&sig_bits); return 6; }
+    }
+    if (sig_algo_len > 0) {
+        rc = buf_append(&body, (u8 *)sig_algo_der, sig_algo_len);
+        if (rc) { buf_destroy(&body); buf_destroy(&sig_bits); return 6; }
+    }
+    rc = asn1_der_encode(&body, ASN1_TAG_BIT_STRING,
+                         sig_bits.data, sig_bits.len);
+    buf_destroy(&sig_bits);
+    if (rc) { buf_destroy(&body); return 6; }
+
+    /* Wrap the whole thing in an outer SEQUENCE. */
+    buf outer;
+    rc = buf_create(&outer, body.len + 16);
+    if (rc) { buf_destroy(&body); return 6; }
+
+    rc = asn1_der_encode_sequence(&outer, body.data, body.len);
+    buf_destroy(&body);
+    if (rc) { buf_destroy(&outer); return 6; }
+
+    u8 *result = (u8 *)malloc((size_t)outer.len);
+    if (!result) { buf_destroy(&outer); return 6; }
+    memcpy(result, outer.data, (size_t)outer.len);
+    *out     = result;
+    *out_len = outer.len;
+    buf_destroy(&outer);
+
     return 0;
 }

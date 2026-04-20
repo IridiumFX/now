@@ -1,5 +1,27 @@
 #include "apennines/t2/net/addr.h"
 #include <string.h>
+#include <stdlib.h>
+
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+
+    static int addr_wsa_ensure_init(void) {
+        static int done = 0;
+        if (!done) {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+            done = 1;
+        }
+        return 0;
+    }
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <netdb.h>
+#endif
 
 /* Simple decimal parse helper, returns number of chars consumed or 0 on error */
 static int parse_decimal(const char *s, unsigned long *out, unsigned long max_val) {
@@ -242,4 +264,71 @@ unsigned long addr_sockaddr_create(net_sock_addr *out, const char *host, u16 por
 
     /* Neither parsed successfully */
     return 3;
+}
+unsigned long addr_resolve(ipv4_addr **out, u64 *out_count, const char *host) {
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    struct addrinfo *cur;
+    u64 count = 0;
+    ipv4_addr *arr = NULL;
+    u64 idx = 0;
+    int gai_rc;
+
+    if (!out) return 1;
+    if (!out_count) return 2;
+    if (!host) return 3;
+
+    *out = NULL;
+    *out_count = 0;
+
+#ifdef _WIN32
+    if (addr_wsa_ensure_init() != 0) return 4;
+#endif
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;       /* IPv4 only for now */
+    hints.ai_socktype = SOCK_STREAM; /* de-duplicate results across socket types */
+
+    gai_rc = getaddrinfo(host, NULL, &hints, &res);
+    if (gai_rc != 0 || !res) {
+        if (res) freeaddrinfo(res);
+        return 4;
+    }
+
+    /* First pass: count IPv4 results */
+    for (cur = res; cur != NULL; cur = cur->ai_next) {
+        if (cur->ai_family == AF_INET && cur->ai_addr != NULL &&
+            cur->ai_addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        freeaddrinfo(res);
+        return 5;
+    }
+
+    arr = (ipv4_addr *)malloc((size_t)count * sizeof(ipv4_addr));
+    if (!arr) {
+        freeaddrinfo(res);
+        return 6;
+    }
+
+    /* Second pass: copy 4-byte network-order addresses into ipv4_addr octets */
+    for (cur = res; cur != NULL && idx < count; cur = cur->ai_next) {
+        if (cur->ai_family == AF_INET && cur->ai_addr != NULL &&
+            cur->ai_addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)cur->ai_addr;
+            /* sin_addr is a 32-bit value in network byte order; octets[0]
+             * is the most significant byte, matching ipv4_addr layout. */
+            memcpy(arr[idx].octets, &sin->sin_addr, 4);
+            idx++;
+        }
+    }
+
+    freeaddrinfo(res);
+
+    *out = arr;
+    *out_count = count;
+    return 0;
 }

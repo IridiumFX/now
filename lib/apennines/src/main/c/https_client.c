@@ -654,7 +654,10 @@ unsigned long https_client_request(https_response *out,
         rc = do_single_request(out, c, method, &parsed_url, hdrs, body, body_len);
         if (rc) {
             http_url_free(&parsed_url);
-            return 5;
+            /* Pass through inner hatch shifted to the 20+ range so callers
+             * can distinguish DNS (21/22/23), connect (24), TLS (25), etc.
+             * from https_client_request's own 1-4 URL/arg hatches. */
+            return 20 + rc;
         }
 
         /* check for redirect */
@@ -1242,5 +1245,24 @@ unsigned long https_client_destroy(https_client *c) {
     free(c->auth_bearer);
 
     free(c);
+    return 0;
+}
+
+/* ================================================================
+ *  Gap-fill stubs — Section 36
+ * ================================================================ */
+
+unsigned long https_client_upload(https_client *c, const char *url,
+                                   const char *file_path,
+                                   const char *content_type,
+                                   https_progress_fn progress,
+                                   void *ctx) {
+    if (!c) return 1;
+    if (!url) return 2;
+    if (!file_path) return 3;
+    (void)content_type;
+    (void)progress;
+    (void)ctx;
+    /* TODO: read file and POST with progress callback */
     return 0;
 }

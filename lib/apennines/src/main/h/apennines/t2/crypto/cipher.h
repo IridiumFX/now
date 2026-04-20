@@ -120,4 +120,36 @@ APENNINES_API unsigned long chacha20_encrypt(u8 *out, const u8 *key32,
                                               const u8 *nonce12, u32 counter,
                                               const u8 *in, u64 in_len);
 
+/* HChaCha20 — key-derivation mode, used to build XChaCha20. Runs 20
+ * rounds on (constants || key || nonce16) WITHOUT adding the initial
+ * state back, returning s[0..3] || s[12..15] as the 32-byte subkey. */
+APENNINES_API unsigned long hchacha20(u8 out_subkey[32],
+                                       const u8 key32[32],
+                                       const u8 nonce16[16]);
+
+/* ---- XChaCha20 / XChaCha20-Poly1305 (CFRG draft-irtf-cfrg-xchacha) ----
+ *
+ * Extended-nonce variant: 24-byte nonce (vs 12 for standard ChaCha20)
+ * makes random-nonce AEAD safe at billions-of-messages scale. Uses
+ * HChaCha20 to derive a per-message subkey from the first 16 nonce
+ * bytes, then runs standard ChaCha20 / ChaCha20-Poly1305 with the
+ * subkey and [0000 || nonce[16..23]] as the 12-byte sub-nonce. */
+
+APENNINES_API unsigned long xchacha20_encrypt(u8 *out, const u8 *key32,
+                                               const u8 *nonce24, u32 counter,
+                                               const u8 *in, u64 in_len);
+
+APENNINES_API unsigned long xchacha20_poly1305_encrypt(u8 *out, u8 *tag16,
+                                                        const u8 *key32,
+                                                        const u8 *nonce24,
+                                                        const u8 *aad, u64 aad_len,
+                                                        const u8 *in, u64 in_len);
+
+APENNINES_API unsigned long xchacha20_poly1305_decrypt(u8 *out,
+                                                        const u8 *key32,
+                                                        const u8 *nonce24,
+                                                        const u8 *aad, u64 aad_len,
+                                                        const u8 *in, u64 in_len,
+                                                        const u8 *tag16);
+
 #endif /* APENNINES_T2_CRYPTO_CIPHER_H */

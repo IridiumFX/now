@@ -10,6 +10,19 @@
     typedef SOCKET dns_sock_t;
     #define DNS_INVALID_SOCKET INVALID_SOCKET
     #define dns_close_socket closesocket
+
+    /* Ensure Winsock is initialised before any network call. Matches the
+       pattern used in tcp.c / udp.c / addr.c — without this, getaddrinfo
+       returns WSANOTINITIALISED (10093) and DNS resolution fails. */
+    static int dns_wsa_ensure_init(void) {
+        static int done = 0;
+        if (!done) {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+            done = 1;
+        }
+        return 0;
+    }
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
@@ -177,6 +190,13 @@ unsigned long dns_query(dns_response *out, const char *hostname) {
     if (!out) return 1;
     if (!hostname) return 2;
 
+#ifdef _WIN32
+    /* Windows: ensure Winsock is up before getaddrinfo. Without this,
+       getaddrinfo returns WSANOTINITIALISED even if the process has a
+       Winsock-linked DLL, because WSAStartup is per-process-per-caller. */
+    if (dns_wsa_ensure_init() != 0) return 3;
+#endif
+
     memset(out, 0, sizeof(dns_response));
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -266,6 +286,10 @@ unsigned long dns_query_raw(u8 *out_buf, u64 *out_len, u64 out_cap,
     if (!out_len) return 2;
     if (!query_buf) return 3;
     if (!server) return 4;
+
+#ifdef _WIN32
+    if (dns_wsa_ensure_init() != 0) return 5;
+#endif
 
     /* Only IPv4 servers supported for now */
     memset(&addr4, 0, sizeof(addr4));

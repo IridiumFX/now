@@ -164,8 +164,24 @@ PICO_API int pico_http_request(const char *method, const char *url,
                                              NULL, (const u8 *)body, (u64)body_len);
     if (rc != 0) {
         https_response_free(&resp);
-        /* Best-effort error mapping from apennines hatch codes */
-        return PICO_ERR_CONNECT;
+        /* Map apennines hatch codes to pico_http errors.
+         *   1-4      : URL/arg hatches from https_client_request itself
+         *   21/22/23 : DNS (query failed / no records / unknown rdata type)
+         *   24       : TCP connect failed
+         *   25       : TLS handshake
+         *   26-30    : request build
+         *   31       : serialize alloc
+         *   32       : send
+         *   33       : read
+         *   34       : parse
+         *   35+      : output build / alloc */
+        if      (rc >= 21 && rc <= 23) return PICO_ERR_DNS;
+        else if (rc == 24)             return PICO_ERR_CONNECT;
+        else if (rc == 25)             return PICO_ERR_TLS;
+        else if (rc == 32)             return PICO_ERR_SEND;
+        else if (rc == 33)             return PICO_ERR_RECV;
+        else if (rc == 34)             return PICO_ERR_PARSE;
+        else                           return PICO_ERR_CONNECT;
     }
 
     /* Copy response */

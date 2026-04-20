@@ -83,4 +83,32 @@ APENNINES_API unsigned long x509_fingerprint(u8 *out,
 /* Free all resources owned by the cert struct. */
 APENNINES_API unsigned long x509_destroy(x509_cert *cert);
 
+/* Build the CertificationRequestInfo (TBS) DER bytes of a PKCS#10 CSR
+ * (RFC 2986).  subject_der is a ready-to-use Name (SEQUENCE OF RDN) DER
+ * blob; pubkey_der is a full SubjectPublicKeyInfo DER blob.  Attributes
+ * are encoded as an empty [0] IMPLICIT SET (no requested extensions).
+ * *out receives malloc'd bytes that the caller must free().
+ * Hatches: 1=out null, 2=out_len null, 3=subject null, 4=pubkey null,
+ *          5=alloc / encode failure */
+APENNINES_API unsigned long x509_csr_create(u8 **out, u64 *out_len,
+                                            const u8 *subject_der,
+                                            u64 subject_len,
+                                            const u8 *pubkey_der,
+                                            u64 pubkey_len);
+
+/* Wrap a previously-built TBS blob and its signature into the full
+ * CertificationRequest DER (RFC 2986):
+ *   SEQUENCE { tbs, AlgorithmIdentifier, BIT STRING signature }.
+ * sig_algo_der is the full AlgorithmIdentifier TLV (e.g., the DER
+ * encoding of  SEQUENCE { OID ecdsa-with-SHA256 }  ).
+ * *out receives malloc'd bytes that the caller must free().
+ * Hatches: 1=out null, 2=out_len null, 3=tbs null, 4=sig_algo null,
+ *          5=signature null, 6=alloc / encode failure */
+APENNINES_API unsigned long x509_csr_sign(u8 **out, u64 *out_len,
+                                          const u8 *tbs, u64 tbs_len,
+                                          const u8 *sig_algo_der,
+                                          u64 sig_algo_len,
+                                          const u8 *signature,
+                                          u64 sig_len);
+
 #endif /* APENNINES_T2_CRYPTO_X509_H */
