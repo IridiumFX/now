@@ -2262,6 +2262,7 @@ static void test_auth_login_null_creds(void) {
 static void test_auth_login_connect_failure(void) {
     TEST("auth: login fails on connection refused");
     NowCredentials creds;
+    memset(&creds, 0, sizeof(creds));
     creds.username = strdup("alice");
     creds.token = strdup("secret");
     char *jwt = NULL;

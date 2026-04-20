@@ -14,8 +14,9 @@ set(PASTA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 # Pasta replaced by Basta (strict superset) — compat shim at src/main/h/pasta.h
 # add_subdirectory(lib/pasta)
 
-# ---- Optional TLS via mbedTLS (submodule) ----
-option(PICO_HTTP_TLS "Enable HTTPS support via mbedTLS" ON)
+# ---- Legacy TLS via mbedTLS (submodule, opt-in only) ----
+# Kept for one release as a fallback. Default is PICO_HTTP_APENNINES (below).
+option(PICO_HTTP_TLS "Enable HTTPS support via mbedTLS (legacy fallback)" OFF)
 if(PICO_HTTP_TLS AND EXISTS "${CMAKE_SOURCE_DIR}/lib/mbedtls/CMakeLists.txt")
     set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
@@ -89,8 +90,9 @@ add_library(now
     lib/basta/src/main/c/basta_writer.c
 )
 
-# Apennines HTTPS backend (replaces pico_http + mbedTLS with native stack)
-option(PICO_HTTP_APENNINES "Use apennines HTTPS stack instead of pico_http+mbedTLS" OFF)
+# Apennines HTTPS backend (replaces pico_http + mbedTLS with native stack).
+# This is the default backend — native C11, zero external deps.
+option(PICO_HTTP_APENNINES "Use apennines HTTPS stack instead of pico_http+mbedTLS" ON)
 if(PICO_HTTP_APENNINES)
     target_sources(now PRIVATE
         lib/apennines/src/main/c/tcp.c
