@@ -1,9 +1,6 @@
 [submodule "lib/cookbook"]
 	path = lib/cookbook
 	url = https://github.com/IridiumFX/cookbook.git
-[submodule "lib/mbedtls"]
-	path = lib/mbedtls
-	url = https://github.com/Mbed-TLS/mbedtls.git
 [submodule "lib/basta"]
 	path = lib/basta
 	url = https://github.com/IridiumFX/Basta.git

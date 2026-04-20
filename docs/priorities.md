@@ -69,7 +69,7 @@ C, C++ (including C++20 modules), asm-gas, asm-nasm, Java, Rust (FFI), Go (cgo),
 ## Self-hosting
 
 `now` builds itself from `now.pasta`. 46 source files, 4-way parallel.
-313 tests, all passing. Two HTTP backends: native (pico_http + mbedTLS) or apennines (TLS 1.3 + HTTP/2).
+313 tests, all passing. Single HTTPS backend: apennines native stack (TLS 1.3 + HTTP/2, zero external deps).
 
 ## Dependencies
 

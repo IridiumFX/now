@@ -14,15 +14,8 @@ set(PASTA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 # Pasta replaced by Basta (strict superset) — compat shim at src/main/h/pasta.h
 # add_subdirectory(lib/pasta)
 
-# ---- Legacy TLS via mbedTLS (submodule, opt-in only) ----
-# Kept for one release as a fallback. Default is PICO_HTTP_APENNINES (below).
-option(PICO_HTTP_TLS "Enable HTTPS support via mbedTLS (legacy fallback)" OFF)
-if(PICO_HTTP_TLS AND EXISTS "${CMAKE_SOURCE_DIR}/lib/mbedtls/CMakeLists.txt")
-    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
-    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
-    add_subdirectory(lib/mbedtls)
-endif()
+# HTTPS backend: apennines native stack (TLS 1.3, HTTP/2, zero external deps).
+# mbedTLS was removed in rc3 — apennines is the sole backend.
 
 # ---- Now library ----
 add_library(now
@@ -90,36 +83,32 @@ add_library(now
     lib/basta/src/main/c/basta_writer.c
 )
 
-# Apennines HTTPS backend (replaces pico_http + mbedTLS with native stack).
-# This is the default backend — native C11, zero external deps.
-option(PICO_HTTP_APENNINES "Use apennines HTTPS stack instead of pico_http+mbedTLS" ON)
-if(PICO_HTTP_APENNINES)
-    target_sources(now PRIVATE
-        lib/apennines/src/main/c/tcp.c
-        lib/apennines/src/main/c/tls.c
-        lib/apennines/src/main/c/dns.c
-        lib/apennines/src/main/c/http.c
-        lib/apennines/src/main/c/h2.c
-        lib/apennines/src/main/c/http_client.c
-        lib/apennines/src/main/c/https_client.c
-        lib/apennines/src/main/c/cipher.c
-        lib/apennines/src/main/c/ct.c
-        lib/apennines/src/main/c/ec.c
-        lib/apennines/src/main/c/ecdsa.c
-        lib/apennines/src/main/c/hash.c
-        lib/apennines/src/main/c/rsa.c
-        lib/apennines/src/main/c/secret.c
-        lib/apennines/src/main/c/x509.c
-        lib/apennines/src/main/c/asn1_der.c
-        lib/apennines/src/main/c/base.c
-        lib/apennines/src/main/c/pem.c
-        lib/apennines/src/main/c/entropy.c
-        lib/apennines/src/main/c/bigint.c
-        lib/apennines/src/main/c/pki.c
-        lib/apennines/src/main/c/threadpool.c
-        lib/apennines/src/main/c/addr.c
-    )
-endif()
+# Apennines HTTPS stack — always compiled (the only HTTPS backend since rc3).
+target_sources(now PRIVATE
+    lib/apennines/src/main/c/tcp.c
+    lib/apennines/src/main/c/tls.c
+    lib/apennines/src/main/c/dns.c
+    lib/apennines/src/main/c/http.c
+    lib/apennines/src/main/c/h2.c
+    lib/apennines/src/main/c/http_client.c
+    lib/apennines/src/main/c/https_client.c
+    lib/apennines/src/main/c/cipher.c
+    lib/apennines/src/main/c/ct.c
+    lib/apennines/src/main/c/ec.c
+    lib/apennines/src/main/c/ecdsa.c
+    lib/apennines/src/main/c/hash.c
+    lib/apennines/src/main/c/rsa.c
+    lib/apennines/src/main/c/secret.c
+    lib/apennines/src/main/c/x509.c
+    lib/apennines/src/main/c/asn1_der.c
+    lib/apennines/src/main/c/base.c
+    lib/apennines/src/main/c/pem.c
+    lib/apennines/src/main/c/entropy.c
+    lib/apennines/src/main/c/bigint.c
+    lib/apennines/src/main/c/pki.c
+    lib/apennines/src/main/c/threadpool.c
+    lib/apennines/src/main/c/addr.c
+)
 
 target_include_directories(now
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/main/h>
@@ -146,14 +135,9 @@ if(WIN32)
     target_link_libraries(now PRIVATE ws2_32)
 endif()
 
-if(PICO_HTTP_APENNINES)
-    target_compile_definitions(now PRIVATE PICO_HTTP_APENNINES)
-    if(WIN32)
-        target_link_libraries(now PRIVATE bcrypt)
-    endif()
-elseif(PICO_HTTP_TLS AND TARGET mbedtls)
-    target_link_libraries(now PRIVATE mbedtls mbedx509 mbedcrypto)
-    target_compile_definitions(now PRIVATE PICO_HTTP_TLS)
+target_compile_definitions(now PRIVATE PICO_HTTP_APENNINES)
+if(WIN32)
+    target_link_libraries(now PRIVATE bcrypt)
 endif()
 
 

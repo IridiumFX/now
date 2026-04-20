@@ -91,8 +91,7 @@ now watch         # rebuild on file changes
 | Alforno | vendored | Pasta processor (templates, config merge) |
 | Apennines fwatch | vendored | File system event watcher |
 | Apennines compress | vendored | LZ4 + Deflate (permessage-deflate) |
-| Apennines HTTPS | vendored, optional | TLS 1.3 + HTTP/2 (replaces mbedTLS) |
-| mbedTLS | submodule, optional | TLS (default backend) |
+| Apennines HTTPS | vendored | TLS 1.3 + HTTP/2 (native, sole backend since rc3) |
 
 ---
 
