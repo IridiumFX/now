@@ -316,7 +316,8 @@
       "Bash(cat now.pasta.imported)",
       "Bash(mkdir -p /tmp/import_test)",
       "Bash(cp C:/Users/Iridium/projects/now/CMakeLists.txt /tmp/import_test/)",
-      "Bash(C:/Users/Iridium/projects/now/build/default/bin/now.exe import:cmake)"
+      "Bash(C:/Users/Iridium/projects/now/build/default/bin/now.exe import:cmake)",
+      "Bash(git rm *)"
     ]
   }
 }
