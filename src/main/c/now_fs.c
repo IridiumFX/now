@@ -9,7 +9,11 @@
 #include <limits.h>
 #include <sys/stat.h>
 
-#ifndef PATH_MAX
+/* MinGW PATH_MAX = 260 (MAX_PATH); Linux/macOS = 4096. We need ≥ 4096 to
+ * satisfy glibc fortify's __realpath_chk and to avoid Windows-side truncation
+ * when paths use the \\?\ extended syntax. */
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
   #define PATH_MAX 4096
 #endif
 

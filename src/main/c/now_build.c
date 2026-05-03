@@ -19,7 +19,10 @@
 #include <limits.h>
 #include <sys/stat.h>
 
-#ifndef PATH_MAX
+/* MinGW PATH_MAX = 260; Linux/macOS = 4096. Promote to ≥ 4096 to satisfy
+ * glibc fortify on realpath sites and to avoid Windows-side truncation. */
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
   #define PATH_MAX 4096
 #endif
 
@@ -715,7 +718,7 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
              * or src/main/cpp/. */
             {
 #ifdef _WIN32
-                char pattern[1024];
+                char pattern[PATH_MAX];
                 snprintf(pattern, sizeof(pattern), "%s\\*", mod_abs);
                 WIN32_FIND_DATAA fd;
                 HANDLE hFind = FindFirstFileA(pattern, &fd);

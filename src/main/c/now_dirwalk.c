@@ -12,7 +12,10 @@
 #include <limits.h>
 #include <sys/stat.h>
 
-#ifndef PATH_MAX
+/* On MinGW, PATH_MAX is 260 (MAX_PATH); on Linux/macOS it's 4096. We need at
+ * least 4096 to satisfy glibc fortify's __realpath_chk static check. */
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
   #define PATH_MAX 4096
 #endif
 

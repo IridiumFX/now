@@ -42,6 +42,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
+
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <direct.h>
@@ -286,7 +292,7 @@ int main(int argc, char *argv[]) {
 
     /* Handle clean */
     if (strcmp(phase, "clean") == 0) {
-        char cwd[512];
+        char cwd[PATH_MAX];
         if (!getcwd_compat(cwd, sizeof(cwd))) {
             fprintf(stderr, "error: cannot determine working directory\n");
             return 1;
@@ -319,7 +325,7 @@ int main(int argc, char *argv[]) {
         if (sorted) fmt_flags |= PASTA_SORTED;
 
         /* Default: format now.pasta in current directory */
-        char cwd_buf[512];
+        char cwd_buf[PATH_MAX];
         char *default_file = NULL;
         if (nfiles == 0) {
             if (getcwd_compat(cwd_buf, sizeof(cwd_buf))) {
@@ -388,7 +394,7 @@ int main(int argc, char *argv[]) {
 
     /* ---- now init / now sketch ---- */
     if (strcmp(phase, "init") == 0 || strcmp(phase, "sketch") == 0) {
-        char cwd[512];
+        char cwd[PATH_MAX];
         if (!getcwd_compat(cwd, sizeof(cwd))) {
             fprintf(stderr, "error: cannot determine working directory\n");
             return 1;

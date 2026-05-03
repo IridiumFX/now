@@ -11,6 +11,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <direct.h>
@@ -408,7 +414,7 @@ NOW_API int now_layer_discover(NowLayerStack *stack, const char *basedir,
     size_t npaths = 0;
     size_t path_cap = 0;
 
-    char dir[1024];
+    char dir[PATH_MAX];
     snprintf(dir, sizeof(dir), "%s", basedir);
 
     /* Get home directory for stop condition */

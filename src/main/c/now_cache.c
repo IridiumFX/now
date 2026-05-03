@@ -12,7 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include <sys/stat.h>
+
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <windows.h>
@@ -209,11 +215,11 @@ NOW_API int now_cache_clean(void) {
     }
 
 #ifdef _WIN32
-    char cmd[1024];
+    char cmd[PATH_MAX + 32];
     snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\"", root);
     int rc = system(cmd);
 #else
-    char cmd[1024];
+    char cmd[PATH_MAX + 32];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
     int rc = system(cmd);
 #endif
@@ -226,7 +232,7 @@ NOW_API int now_cache_clean(void) {
 
 #ifdef _WIN32
 static void walk_cache_dir(const char *dir, int *count, long long *total_size) {
-    char pattern[1024];
+    char pattern[PATH_MAX];
     snprintf(pattern, sizeof(pattern), "%s\\*", dir);
 
     WIN32_FIND_DATAA fdata;

@@ -14,6 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+
+#if !defined(PATH_MAX) || PATH_MAX < 4096
+  #undef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <windows.h>
@@ -258,7 +264,7 @@ NOW_API char *now_plugin_find_binary(const char *repo_root,
     if (!gpath) { free(default_root); return NULL; }
 
     /* Build: {repo}/{group_path}/{artifact}/{version}/bin/{artifact}[.exe] */
-    char path[1024];
+    char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s/%s/%s/bin/%s%s",
              root, gpath, artifact, version, artifact, EXE_EXT);
 
@@ -304,7 +310,7 @@ NOW_API int now_plugin_get_info(const char *repo_root,
     char *gpath = group_to_path(group);
     if (!gpath) { free(default_root); return -1; }
 
-    char manifest_path[1024];
+    char manifest_path[PATH_MAX];
     snprintf(manifest_path, sizeof(manifest_path), "%s/%s/%s/%s/plugin.pasta",
              root, gpath, artifact, version);
 
@@ -320,7 +326,7 @@ NOW_API int now_plugin_get_info(const char *repo_root,
 static int scan_for_plugins(const char *dir, NowPluginInfo **out,
                               size_t *count, size_t *cap) {
 #ifdef _WIN32
-    char pattern[1024];
+    char pattern[PATH_MAX];
     snprintf(pattern, sizeof(pattern), "%s\\*", dir);
 
     WIN32_FIND_DATAA fd;
@@ -332,7 +338,7 @@ static int scan_for_plugins(const char *dir, NowPluginInfo **out,
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
             /* Check if this is a plugin.pasta */
             if (strcmp(fd.cFileName, "plugin.pasta") == 0) {
-                char full[1024];
+                char full[PATH_MAX];
                 snprintf(full, sizeof(full), "%s\\%s", dir, fd.cFileName);
                 NowPluginInfo info;
                 NowResult res;
@@ -349,7 +355,7 @@ static int scan_for_plugins(const char *dir, NowPluginInfo **out,
             continue;
         }
         /* Recurse into subdirectory */
-        char sub[1024];
+        char sub[PATH_MAX];
         snprintf(sub, sizeof(sub), "%s\\%s", dir, fd.cFileName);
         scan_for_plugins(sub, out, count, cap);
     } while (FindNextFileA(h, &fd));
@@ -363,7 +369,7 @@ static int scan_for_plugins(const char *dir, NowPluginInfo **out,
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
 
-        char full[1024];
+        char full[PATH_MAX];
         snprintf(full, sizeof(full), "%s/%s", dir, ent->d_name);
 
         struct stat st;
@@ -642,7 +648,7 @@ NOW_API int now_plugin_install(const char *registry_url,
     }
 
     /* Validate plugin manifest */
-    char manifest_path[1024];
+    char manifest_path[PATH_MAX];
     snprintf(manifest_path, sizeof(manifest_path), "%s/plugin.pasta", dest);
 
     if (now_path_exists(manifest_path)) {
