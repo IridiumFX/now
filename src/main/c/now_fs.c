@@ -6,7 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include <sys/stat.h>
+
+#ifndef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <windows.h>
@@ -262,8 +267,9 @@ static int discover_recursive(const char *basedir, const char *rel_dir,
     /* Get current mtime (high-precision) */
     long long cur_mtime = dir_mtime_hires(abs_dir);
 
-    /* Try cache */
-    char canon[1024];
+    /* Try cache. Buffer must be PATH_MAX — glibc fortify's __realpath_chk
+     * aborts at compile time if the destination is smaller. */
+    char canon[PATH_MAX];
     canonicalize_into(canon, sizeof(canon), abs_dir);
 
     const NowDirCacheEntry *cached =

@@ -9,7 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include <sys/stat.h>
+
+#ifndef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 NOW_API NowDirwalkCache *now_dirwalk_cache_global = NULL;
 
@@ -237,8 +242,10 @@ NOW_API int now_dirwalk_load(NowDirwalkCache *cache, const char *path) {
 NOW_API char *now_dirwalk_cache_path(const char *basedir) {
     if (!basedir) return NULL;
 
-    /* Canonicalize basedir → absolute path */
-    char canon[1024];
+    /* Canonicalize basedir → absolute path. POSIX realpath() requires the
+     * destination buffer to be at least PATH_MAX bytes; glibc's fortify
+     * wrapper enforces that statically and aborts otherwise. */
+    char canon[PATH_MAX];
 #ifdef _WIN32
     if (!_fullpath(canon, basedir, sizeof(canon)))
         snprintf(canon, sizeof(canon), "%s", basedir);

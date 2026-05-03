@@ -16,7 +16,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include <sys/stat.h>
+
+#ifndef PATH_MAX
+  #define PATH_MAX 4096
+#endif
 
 #ifdef _WIN32
   #include <windows.h>
@@ -594,9 +599,10 @@ static void resolve_modules(ResolveScope *scope, const char *basedir,
         if (!mod_abs) { free(mod); continue; }
 
         /* Dedup: canonicalize path then check if already resolved.
-         * Handles ../pasta vs lib/pasta resolving to the same directory. */
+         * Handles ../pasta vs lib/pasta resolving to the same directory.
+         * Buffer must be PATH_MAX — glibc fortify checks this statically. */
         {
-            char canon[1024];
+            char canon[PATH_MAX];
 #ifdef _WIN32
             _fullpath(canon, mod_abs, sizeof(canon));
 #else
@@ -3418,8 +3424,9 @@ NOW_API int now_compile_db(const NowProject *project, const char *basedir,
         return -1;
     }
 
-    /* Get absolute basedir for "directory" field */
-    char abs_basedir[1024];
+    /* Get absolute basedir for "directory" field. Buffer must be PATH_MAX
+     * to satisfy POSIX realpath() and glibc's __realpath_chk fortify wrapper. */
+    char abs_basedir[PATH_MAX];
 #ifdef _WIN32
     if (!_fullpath(abs_basedir, basedir, sizeof(abs_basedir)))
         strncpy(abs_basedir, basedir, sizeof(abs_basedir) - 1);
@@ -3461,9 +3468,9 @@ NOW_API int now_compile_db(const NowProject *project, const char *basedir,
         json_escape(f, abs_basedir);
         fputs(",\n", f);
 
-        /* file (absolute path) */
+        /* file (absolute path). PATH_MAX buffer required by realpath fortify. */
         char *src_full = now_path_join(basedir, src);
-        char abs_src[1024];
+        char abs_src[PATH_MAX];
 #ifdef _WIN32
         if (!_fullpath(abs_src, src_full ? src_full : src, sizeof(abs_src)))
             strncpy(abs_src, src_full ? src_full : src, sizeof(abs_src) - 1);
