@@ -12,3 +12,4 @@ local/
 *.obj
 CMakeUserPresets.json
 target/
+.cache/
