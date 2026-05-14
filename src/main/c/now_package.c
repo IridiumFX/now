@@ -34,12 +34,37 @@
 
 NOW_API const char *now_host_triple(void) {
 #if defined(_WIN32)
+    /* Distinguish MSVC (cl.exe) vs MinGW (gcc/clang via mingw) — both are
+     * "Windows" but the resulting binaries are not ABI-compatible.
+     * Compile-time defines:
+     *   _MSC_VER             — set by cl.exe (and clang-cl)
+     *   __MINGW32/64__       — set by MinGW gcc and clang targeting mingw
+     * MSVC takes precedence — if both happen to be defined, that's a
+     * clang-cl build and -msvc is correct. */
   #if defined(_M_X64) || defined(__x86_64__)
-    return "windows-x86_64-msvc";
+    #if defined(_MSC_VER)
+      return "windows-x86_64-msvc";
+    #elif defined(__MINGW32__) || defined(__MINGW64__)
+      return "windows-x86_64-gnu";
+    #else
+      return "windows-x86_64-msvc";
+    #endif
   #elif defined(_M_ARM64) || defined(__aarch64__)
-    return "windows-aarch64-msvc";
+    #if defined(_MSC_VER)
+      return "windows-aarch64-msvc";
+    #elif defined(__MINGW32__) || defined(__MINGW64__)
+      return "windows-aarch64-gnu";
+    #else
+      return "windows-aarch64-msvc";
+    #endif
   #else
-    return "windows-x86-msvc";
+    #if defined(_MSC_VER)
+      return "windows-x86-msvc";
+    #elif defined(__MINGW32__) || defined(__MINGW64__)
+      return "windows-x86-gnu";
+    #else
+      return "windows-x86-msvc";
+    #endif
   #endif
 #elif defined(__APPLE__)
   #if defined(__aarch64__)

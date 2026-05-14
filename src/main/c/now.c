@@ -5,6 +5,7 @@
 #include "now_build.h"
 #include "now_procure.h"
 #include "now_plugin.h"
+#include "now_package.h"
 #include "now_version.h"
 #include "now_fs.h"
 #include "now_arch.h"
@@ -173,17 +174,17 @@ static int procure_and_inject_deps(const NowProject *project,
 
             /* Lib dir: -L or /LIBPATH:.  Installed deps land at
              * <repo>/group/artifact/version/lib/<triple>/<lib>, so we need
-             * to point at the triple subdir, not its parent. Falls back to
-             * <dep>/lib if no triple subdir exists (header-only or older
-             * install layout). */
+             * to point at the triple subdir, not its parent. Use
+             * now_host_triple() — the same function 'now install' uses —
+             * to guarantee the path matches what was written. Falls back
+             * to <dep>/lib if the triple subdir is absent (header-only
+             * package or older install layout). */
             char *lib_base = now_path_join(dep_path, "lib");
             char *lib_dir  = NULL;
             if (lib_base && now_path_exists(lib_base)) {
-                char triple_buf[64] = {0};
-                const NowTriple *host = now_host_triple_parsed();
-                if (host) now_triple_dir(host, triple_buf, sizeof(triple_buf));
-                if (triple_buf[0]) {
-                    char *cand = now_path_join(lib_base, triple_buf);
+                const char *host_triple = now_host_triple();
+                if (host_triple) {
+                    char *cand = now_path_join(lib_base, host_triple);
                     if (cand && now_path_exists(cand)) lib_dir = cand;
                     else free(cand);
                 }
@@ -201,6 +202,21 @@ static int procure_and_inject_deps(const NowProject *project,
                     now_filelist_push(&ctx->dep_libdirs, flag);
                     free(flag);
                 }
+#if !defined(_WIN32)
+                /* POSIX: embed RPATH so consumer binaries find the shared
+                 * library at run time without LD_LIBRARY_PATH gymnastics.
+                 * Windows uses PATH lookup at process start instead — set
+                 * separately by the test-runner before exec. */
+                if (!msvc) {
+                    size_t rlen = strlen(lib_dir) + 16;
+                    char *rflag = (char *)malloc(rlen);
+                    if (rflag) {
+                        snprintf(rflag, rlen, "-Wl,-rpath,%s", lib_dir);
+                        now_filelist_push(&ctx->dep_libdirs, rflag);
+                        free(rflag);
+                    }
+                }
+#endif
                 free(lib_dir);
             }
 
