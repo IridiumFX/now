@@ -290,6 +290,66 @@ NOW_API int now_workspace_build(NowWorkspace *ws, int verbose, int jobs,
     return rc;
 }
 
+NOW_API int now_workspace_test(NowWorkspace *ws, int verbose, int jobs,
+                                NowResult *result) {
+    int **waves = NULL;
+    int  *wave_sizes = NULL;
+
+    int nwaves = now_workspace_topo_sort(ws, &waves, &wave_sizes, result);
+    if (nwaves < 0) return -1;
+
+    if (verbose)
+        fprintf(stderr, "workspace: testing %zu modules in %d wave(s)\n",
+                ws->module_count, nwaves);
+
+    int rc = 0;
+    int total_fail_modules = 0;
+
+    for (int w = 0; w < nwaves; w++) {
+        if (verbose) {
+            fprintf(stderr, "\n--- wave %d/%d: ", w + 1, nwaves);
+            for (int m = 0; m < wave_sizes[w]; m++) {
+                if (m > 0) fprintf(stderr, ", ");
+                fprintf(stderr, "%s", ws->modules[waves[w][m]].name);
+            }
+            fprintf(stderr, " ---\n");
+        }
+
+        for (int m = 0; m < wave_sizes[w]; m++) {
+            int idx = waves[w][m];
+            NowModule *mod = &ws->modules[idx];
+
+            if (verbose)
+                fprintf(stderr, "\n  testing module: %s\n", mod->name);
+            else
+                fprintf(stderr, "[%s]\n", mod->name);
+
+            NowResult mres;
+            memset(&mres, 0, sizeof(mres));
+            int trc = now_test(mod->project, mod->dir, verbose, jobs, &mres);
+            if (trc != 0) {
+                fprintf(stderr, "  module '%s' tests failed: %s\n",
+                        mod->name, mres.message[0] ? mres.message : "unknown");
+                total_fail_modules++;
+                rc = -1;
+            }
+        }
+    }
+
+    if (total_fail_modules > 0 && result) {
+        result->code = NOW_ERR_TEST;
+        snprintf(result->message, sizeof(result->message),
+                 "%d module(s) had failing tests", total_fail_modules);
+    }
+
+    for (size_t i = 0; i < ws->module_count; i++)
+        free(waves[i]);
+    free(waves);
+    free(wave_sizes);
+
+    return rc;
+}
+
 /* ---- Cleanup ---- */
 
 NOW_API void now_workspace_free(NowWorkspace *ws) {

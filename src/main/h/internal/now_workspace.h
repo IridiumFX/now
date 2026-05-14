@@ -55,6 +55,11 @@ NOW_API int now_workspace_topo_sort(NowWorkspace *ws,
 NOW_API int now_workspace_build(NowWorkspace *ws, int verbose, int jobs,
                                  NowResult *result);
 
+/* Build then run tests for every module in topological order.
+ * Returns 0 if every module's tests pass. */
+NOW_API int now_workspace_test(NowWorkspace *ws, int verbose, int jobs,
+                                NowResult *result);
+
 /* Free workspace resources. */
 NOW_API void now_workspace_free(NowWorkspace *ws);
 

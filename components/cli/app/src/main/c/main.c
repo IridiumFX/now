@@ -1157,7 +1157,15 @@ skip_header:
             fprintf(stderr, "error: %s\n", result.message);
 
     } else if (strcmp(phase, "test") == 0) {
-        rc = now_test(project, cwd, verbose, jobs, &result);
+        if (now_is_workspace(project)) {
+            NowWorkspace ws;
+            rc = now_workspace_init(&ws, project, cwd, &result);
+            if (rc == 0)
+                rc = now_workspace_test(&ws, verbose, jobs, &result);
+            now_workspace_free(&ws);
+        } else {
+            rc = now_test(project, cwd, verbose, jobs, &result);
+        }
         if (rc != 0)
             fprintf(stderr, "error: %s\n", result.message);
 

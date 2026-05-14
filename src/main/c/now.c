@@ -7,6 +7,7 @@
 #include "now_plugin.h"
 #include "now_version.h"
 #include "now_fs.h"
+#include "now_arch.h"
 #include "now_tui.h"
 #include "now.h"
 
@@ -99,16 +100,21 @@ NOW_API const char *now_project_convergence(const NowProject *p) {
 /* ---- Procure + dep path injection ---- */
 
 /* Run procure phase and populate build context dep paths.
- * Returns 0 on success. If project has no deps, this is a no-op. */
+ * Returns 0 on success. If project has no deps, this is a no-op.
+ *
+ * Even if procure fails (e.g. registry unreachable), we still try to
+ * inject paths from the local repo — a previously-installed dep
+ * should remain usable while offline. */
 static int procure_and_inject_deps(const NowProject *project,
                                     NowBuildCtx *ctx, NowResult *result) {
     if (!project || project->deps.count == 0)
         return 0;
 
-    /* Run procure */
+    /* Run procure (non-fatal — locally-installed deps still work) */
     NowProcureOpts opts = {0};
-    int rc = now_procure(project, &opts, result);
-    if (rc != 0) return rc;
+    NowResult procure_res;
+    memset(&procure_res, 0, sizeof(procure_res));
+    (void)now_procure(project, &opts, &procure_res);
 
     /* Determine repo root */
     const char *home = NULL;
@@ -165,9 +171,26 @@ static int procure_and_inject_deps(const NowProject *project,
             }
             free(h_dir);
 
-            /* Lib dir: -L or /LIBPATH: */
-            char *lib_dir = now_path_join(dep_path, "lib");
-            if (lib_dir && now_path_exists(lib_dir)) {
+            /* Lib dir: -L or /LIBPATH:.  Installed deps land at
+             * <repo>/group/artifact/version/lib/<triple>/<lib>, so we need
+             * to point at the triple subdir, not its parent. Falls back to
+             * <dep>/lib if no triple subdir exists (header-only or older
+             * install layout). */
+            char *lib_base = now_path_join(dep_path, "lib");
+            char *lib_dir  = NULL;
+            if (lib_base && now_path_exists(lib_base)) {
+                char triple_buf[64] = {0};
+                const NowTriple *host = now_host_triple_parsed();
+                if (host) now_triple_dir(host, triple_buf, sizeof(triple_buf));
+                if (triple_buf[0]) {
+                    char *cand = now_path_join(lib_base, triple_buf);
+                    if (cand && now_path_exists(cand)) lib_dir = cand;
+                    else free(cand);
+                }
+                if (!lib_dir) lib_dir = strdup(lib_base);
+            }
+            free(lib_base);
+            if (lib_dir) {
                 size_t len = strlen(lib_dir) + 12;
                 char *flag = (char *)malloc(len);
                 if (flag) {
@@ -178,8 +201,8 @@ static int procure_and_inject_deps(const NowProject *project,
                     now_filelist_push(&ctx->dep_libdirs, flag);
                     free(flag);
                 }
+                free(lib_dir);
             }
-            free(lib_dir);
 
             /* Lib name: -l{name} or {name}.lib */
             {

@@ -1030,9 +1030,14 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     const char *src_dir = project->sources.dir;
     if (!src_dir) src_dir = "src/main/c";  /* safety fallback — pom loader already sets this */
 
+    /* Header-only modules legitimately have no .c files (the directory
+     * may even be absent). Skip the source-existence check for them. */
+    int is_header_only = (project->output.type &&
+                          strcmp(project->output.type, "header-only") == 0);
+
     int rc = now_discover_sources(basedir, src_dir, exts, &ctx->sources);
 
-    if (rc != 0) {
+    if (rc != 0 && !is_header_only) {
         free(exts);
         if (result) {
             result->code = NOW_ERR_IO;
@@ -1069,7 +1074,7 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     }
     free(exts);
 
-    if (ctx->sources.count == 0) {
+    if (ctx->sources.count == 0 && !is_header_only) {
         if (result) {
             result->code = NOW_ERR_NOT_FOUND;
             snprintf(result->message, sizeof(result->message),
@@ -1499,6 +1504,16 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
             nwarn++;
         }
     }
+
+    /* Auto-inject -fPIC when producing a shared library on a POSIX target.
+     * On Linux/macOS/BSD, .so/.dylib link fails without PIC objects. MSVC
+     * doesn't need this — Windows DLLs are inherently position-independent. */
+#if !defined(_WIN32)
+    if (p->output.type && strcmp(p->output.type, "shared") == 0
+        && !ctx->toolchain.is_msvc) {
+        tmp_argv[tmp_argc++] = "-fPIC";
+    }
+#endif
 
     /* Defines */
     char *def_bufs[64];
@@ -2823,6 +2838,12 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
         return build_java_link(ctx, result);
     }
 
+    /* Header-only modules legitimately have nothing to link. */
+    if (p->output.type && strcmp(p->output.type, "header-only") == 0) {
+        if (result) { result->code = NOW_OK; result->message[0] = '\0'; }
+        return 0;
+    }
+
     if (ctx->objects.count == 0) {
         if (result) {
             result->code = NOW_ERR_NOT_FOUND;
@@ -3302,12 +3323,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                     free(inc_full);
                 }
             }
-            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++) {
-                /* dep_includes are already absolute paths — wrap with /I */
-                char inc_flag[PATH_MAX + 4];
-                snprintf(inc_flag, sizeof(inc_flag), "/I%s", ctx->dep_includes.paths[ii]);
-                argv[argc++] = strdup(inc_flag);
-            }
+            /* dep_includes are pre-formatted with /I prefix by procure */
+            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++)
+                argv[argc++] = ctx->dep_includes.paths[ii];
 
             /* tests.defines — extra -DKEY=VAL macros (e.g. fixture paths) */
             for (size_t ii = 0; ii < p->tests.defines.count && argc < 60; ii++) {
@@ -3368,11 +3386,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                     free(inc_full);
                 }
             }
-            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++) {
-                char inc_flag[PATH_MAX + 4];
-                snprintf(inc_flag, sizeof(inc_flag), "-I%s", ctx->dep_includes.paths[ii]);
-                argv[argc++] = strdup(inc_flag);
-            }
+            /* dep_includes are pre-formatted with -I prefix by procure */
+            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++)
+                argv[argc++] = ctx->dep_includes.paths[ii];
 
             /* tests.defines — extra -DKEY=VAL macros (e.g. fixture paths) */
             for (size_t ii = 0; ii < p->tests.defines.count && argc < 60; ii++) {
@@ -3490,6 +3506,22 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                     largv[largc++] = test_objects.paths[t];
                     for (size_t i = 0; i < ctx->objects.count; i++)
                         largv[largc++] = ctx->objects.paths[i];
+                    /* link.libdirs → /LIBPATH: */
+                    for (size_t i = 0; i < p->link.libdirs.count && nl < 64; i++) {
+                        char *full = now_path_join(basedir, p->link.libdirs.items[i]);
+                        if (!full) continue;
+                        size_t len = strlen(full) + 12;
+                        lbufs[nl] = malloc(len);
+                        if (lbufs[nl]) {
+                            snprintf(lbufs[nl], len, "/LIBPATH:%s", full);
+                            largv[largc++] = lbufs[nl];
+                            nl++;
+                        }
+                        free(full);
+                    }
+                    /* dep_libdirs from procure (pre-formatted) */
+                    for (size_t i = 0; i < ctx->dep_libdirs.count; i++)
+                        largv[largc++] = ctx->dep_libdirs.paths[i];
                     for (size_t i = 0; i < p->link.libs.count && nl < 64; i++) {
                         size_t len = strlen(p->link.libs.items[i]) + 5;
                         lbufs[nl] = malloc(len);
@@ -3499,12 +3531,31 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                             nl++;
                         }
                     }
+                    /* dep_libs from procure (pre-formatted) */
+                    for (size_t i = 0; i < ctx->dep_libs.count; i++)
+                        largv[largc++] = ctx->dep_libs.paths[i];
                     largv[largc] = NULL;
                 } else {
                     largv[largc++] = has_cxx ? ctx->toolchain.cxx : ctx->toolchain.cc;
                     largv[largc++] = test_objects.paths[t];
                     for (size_t i = 0; i < ctx->objects.count; i++)
                         largv[largc++] = ctx->objects.paths[i];
+                    /* link.libdirs → -L */
+                    for (size_t i = 0; i < p->link.libdirs.count && nl < 64; i++) {
+                        char *full = now_path_join(basedir, p->link.libdirs.items[i]);
+                        if (!full) continue;
+                        size_t len = strlen(full) + 3;
+                        lbufs[nl] = malloc(len);
+                        if (lbufs[nl]) {
+                            snprintf(lbufs[nl], len, "-L%s", full);
+                            largv[largc++] = lbufs[nl];
+                            nl++;
+                        }
+                        free(full);
+                    }
+                    /* dep_libdirs from procure (pre-formatted) */
+                    for (size_t i = 0; i < ctx->dep_libdirs.count; i++)
+                        largv[largc++] = ctx->dep_libdirs.paths[i];
                     for (size_t i = 0; i < p->link.libs.count && nl < 64; i++) {
                         size_t len = strlen(p->link.libs.items[i]) + 3;
                         lbufs[nl] = malloc(len);
@@ -3514,6 +3565,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                             nl++;
                         }
                     }
+                    /* dep_libs from procure (pre-formatted) */
+                    for (size_t i = 0; i < ctx->dep_libs.count; i++)
+                        largv[largc++] = ctx->dep_libs.paths[i];
                     largv[largc++] = "-o";
                     largv[largc++] = tbin;
                     largv[largc] = NULL;
@@ -3597,6 +3651,21 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         for (size_t i = 0; i < ctx->objects.count; i++)
             argv[argc++] = ctx->objects.paths[i];
 
+        for (size_t i = 0; i < p->link.libdirs.count && nlib < 64; i++) {
+            char *full = now_path_join(basedir, p->link.libdirs.items[i]);
+            if (!full) continue;
+            size_t len = strlen(full) + 12;
+            lib_bufs[nlib] = malloc(len);
+            if (lib_bufs[nlib]) {
+                snprintf(lib_bufs[nlib], len, "/LIBPATH:%s", full);
+                argv[argc++] = lib_bufs[nlib];
+                nlib++;
+            }
+            free(full);
+        }
+        for (size_t i = 0; i < ctx->dep_libdirs.count; i++)
+            argv[argc++] = ctx->dep_libdirs.paths[i];
+
         for (size_t i = 0; i < p->link.libs.count && nlib < 64; i++) {
             size_t len = strlen(p->link.libs.items[i]) + 5;
             lib_bufs[nlib] = malloc(len);
@@ -3606,6 +3675,8 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 nlib++;
             }
         }
+        for (size_t i = 0; i < ctx->dep_libs.count; i++)
+            argv[argc++] = ctx->dep_libs.paths[i];
         argv[argc] = NULL;
     } else {
         /* GCC/Clang: cc objs... -llibs... -o test */
@@ -3621,6 +3692,21 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         for (size_t i = 0; i < ctx->objects.count; i++)
             argv[argc++] = ctx->objects.paths[i];
 
+        for (size_t i = 0; i < p->link.libdirs.count && nlib < 64; i++) {
+            char *full = now_path_join(basedir, p->link.libdirs.items[i]);
+            if (!full) continue;
+            size_t len = strlen(full) + 3;
+            lib_bufs[nlib] = malloc(len);
+            if (lib_bufs[nlib]) {
+                snprintf(lib_bufs[nlib], len, "-L%s", full);
+                argv[argc++] = lib_bufs[nlib];
+                nlib++;
+            }
+            free(full);
+        }
+        for (size_t i = 0; i < ctx->dep_libdirs.count; i++)
+            argv[argc++] = ctx->dep_libdirs.paths[i];
+
         for (size_t i = 0; i < p->link.libs.count && nlib < 64; i++) {
             size_t len = strlen(p->link.libs.items[i]) + 3;
             lib_bufs[nlib] = malloc(len);
@@ -3630,6 +3716,8 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 nlib++;
             }
         }
+        for (size_t i = 0; i < ctx->dep_libs.count; i++)
+            argv[argc++] = ctx->dep_libs.paths[i];
 
         argv[argc++] = "-o";
         argv[argc++] = test_bin;
