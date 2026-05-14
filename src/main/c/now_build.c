@@ -471,6 +471,21 @@ static int has_java_lang(const NowProject *p) {
     return has_lang(p, "java");
 }
 
+/* Translate user-facing language-standard names to the spelling the
+ * compiler driver actually accepts. The canonical "c23" / "c++26" are
+ * recent enough that older still-widely-deployed compilers (gcc 13.x in
+ * particular) only know the preview names "c2x" / "c++2c". Clang and
+ * gcc 14+ accept both names, so emitting the preview spelling is
+ * universally safe.
+ *
+ * Pass-through for any std we don't need to rewrite. */
+static const char *translate_std(const char *std) {
+    if (!std) return std;
+    if (strcmp(std, "c23")   == 0) return "c2x";
+    if (strcmp(std, "c++26") == 0) return "c++2c";
+    return std;
+}
+
 /* True if `base` has src/main/c/ or src/main/cpp/ (i.e., is a module
  * by convention, independent of any now.pasta it may or may not have). */
 static int is_module_dir(const char *base) {
@@ -1088,7 +1103,7 @@ static int build_compile_job_msvc(NowBuildCtx *ctx, const char *src_rel,
     char std_buf[32] = {0};
     const char *std = p->compile.std ? p->compile.std : p->std;
     if (std && lang->std_flag) {
-        snprintf(std_buf, sizeof(std_buf), "/std:%s", std);
+        snprintf(std_buf, sizeof(std_buf), "/std:%s", translate_std(std));
         tmp_argv[tmp_argc++] = std_buf;
     }
 
@@ -1393,7 +1408,7 @@ static int build_compile_job(NowBuildCtx *ctx, const char *src_rel,
     char std_buf[32] = {0};
     const char *std = p->compile.std ? p->compile.std : p->std;
     if (std && lang->std_flag) {
-        snprintf(std_buf, sizeof(std_buf), "-std=%s", std);
+        snprintf(std_buf, sizeof(std_buf), "-std=%s", translate_std(std));
         tmp_argv[tmp_argc++] = std_buf;
     }
 
@@ -3176,26 +3191,48 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
             char std_buf[32] = {0};
             const char *std_val = p->compile.std ? p->compile.std : p->std;
             if (std_val && lang->std_flag) {
-                snprintf(std_buf, sizeof(std_buf), "/std:%s", std_val);
+                snprintf(std_buf, sizeof(std_buf), "/std:%s", translate_std(std_val));
                 argv[argc++] = std_buf;
             }
 
             const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
-                char inc_flag[512];
+                char inc_flag[PATH_MAX + 4];
                 snprintf(inc_flag, sizeof(inc_flag), "/I%s", inc_src);
-                char *inc_arg = strdup(inc_flag);
-                argv[argc++] = inc_arg;
+                argv[argc++] = strdup(inc_flag);
             }
             if (p->sources.headers) {
                 inc_hdr = now_path_join(basedir, p->sources.headers);
                 if (inc_hdr) {
-                    char inc_flag[512];
+                    char inc_flag[PATH_MAX + 4];
                     snprintf(inc_flag, sizeof(inc_flag), "/I%s", inc_hdr);
-                    char *inc_arg = strdup(inc_flag);
-                    argv[argc++] = inc_arg;
+                    argv[argc++] = strdup(inc_flag);
                 }
+            }
+            if (p->sources.private_headers) {
+                char *prv = now_path_join(basedir, p->sources.private_headers);
+                if (prv) {
+                    char inc_flag[PATH_MAX + 4];
+                    snprintf(inc_flag, sizeof(inc_flag), "/I%s", prv);
+                    argv[argc++] = strdup(inc_flag);
+                    free(prv);
+                }
+            }
+            for (size_t ii = 0; ii < p->compile.includes.count && argc < 60; ii++) {
+                char *inc_full = now_path_join(basedir, p->compile.includes.items[ii]);
+                if (inc_full) {
+                    char inc_flag[PATH_MAX + 4];
+                    snprintf(inc_flag, sizeof(inc_flag), "/I%s", inc_full);
+                    argv[argc++] = strdup(inc_flag);
+                    free(inc_full);
+                }
+            }
+            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++) {
+                /* dep_includes are already absolute paths — wrap with /I */
+                char inc_flag[PATH_MAX + 4];
+                snprintf(inc_flag, sizeof(inc_flag), "/I%s", ctx->dep_includes.paths[ii]);
+                argv[argc++] = strdup(inc_flag);
             }
 
             argv[argc++] = "/c";
@@ -3210,26 +3247,47 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
             char std_buf[32] = {0};
             const char *std_val = p->compile.std ? p->compile.std : p->std;
             if (std_val && lang->std_flag) {
-                snprintf(std_buf, sizeof(std_buf), "-std=%s", std_val);
+                snprintf(std_buf, sizeof(std_buf), "-std=%s", translate_std(std_val));
                 argv[argc++] = std_buf;
             }
 
             const char *src_dir_str = p->sources.dir ? p->sources.dir : "src/main/c";
             inc_src = now_path_join(basedir, src_dir_str);
             if (inc_src) {
-                char inc_flag[512];
+                char inc_flag[PATH_MAX + 4];
                 snprintf(inc_flag, sizeof(inc_flag), "-I%s", inc_src);
-                char *inc_arg = strdup(inc_flag);
-                argv[argc++] = inc_arg;
+                argv[argc++] = strdup(inc_flag);
             }
             if (p->sources.headers) {
                 inc_hdr = now_path_join(basedir, p->sources.headers);
                 if (inc_hdr) {
-                    char inc_flag[512];
+                    char inc_flag[PATH_MAX + 4];
                     snprintf(inc_flag, sizeof(inc_flag), "-I%s", inc_hdr);
-                    char *inc_arg = strdup(inc_flag);
-                    argv[argc++] = inc_arg;
+                    argv[argc++] = strdup(inc_flag);
                 }
+            }
+            if (p->sources.private_headers) {
+                char *prv = now_path_join(basedir, p->sources.private_headers);
+                if (prv) {
+                    char inc_flag[PATH_MAX + 4];
+                    snprintf(inc_flag, sizeof(inc_flag), "-I%s", prv);
+                    argv[argc++] = strdup(inc_flag);
+                    free(prv);
+                }
+            }
+            for (size_t ii = 0; ii < p->compile.includes.count && argc < 60; ii++) {
+                char *inc_full = now_path_join(basedir, p->compile.includes.items[ii]);
+                if (inc_full) {
+                    char inc_flag[PATH_MAX + 4];
+                    snprintf(inc_flag, sizeof(inc_flag), "-I%s", inc_full);
+                    argv[argc++] = strdup(inc_flag);
+                    free(inc_full);
+                }
+            }
+            for (size_t ii = 0; ii < ctx->dep_includes.count && argc < 60; ii++) {
+                char inc_flag[PATH_MAX + 4];
+                snprintf(inc_flag, sizeof(inc_flag), "-I%s", ctx->dep_includes.paths[ii]);
+                argv[argc++] = strdup(inc_flag);
             }
 
             argv[argc++] = "-c";
