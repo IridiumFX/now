@@ -237,6 +237,28 @@ All three projects ship with the same three-line workflow.
 
 `now ci` is the right default for GitHub Actions — it emits JSON/Pasta/text formats (`--output <fmt>`) for downstream parsing.
 
+### Test layouts: one binary vs. one-per-file
+
+`now test` supports two link modes, set in `now.pasta`:
+
+```pasta
+tests: {
+  dir:  "src/test/c",
+  mode: "single"   /* default — all .c link into one binary with one main() */
+}
+```
+
+```pasta
+tests: {
+  dir:  "src/test/c",
+  mode: "each"     /* each .c is its own binary with its own main() */
+}
+```
+
+**`single`** (the default) suits in-house test frameworks that aggregate cases under one driver — small to medium projects, `now`/cookbook/apennines/gut all use this.
+
+**`each`** suits codebases migrated from CMake/CTest or any framework where each `test_*.c` is an independent executable with its own `main()`. Binaries land under `target/test/bin/<name>[.exe]`; `now test` runs them in sequence and reports `N passed, M failed`. Exit non-zero if any test fails.
+
 ---
 
 ## Performance expectations on GitHub runners

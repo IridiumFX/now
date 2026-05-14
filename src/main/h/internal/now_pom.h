@@ -29,6 +29,12 @@ typedef struct {
     char *pattern;         /* glob pattern */
     NowStrArray include;   /* explicit additions */
     NowStrArray exclude;   /* glob exclusions */
+    /* For the 'tests' section only: link mode.
+     *   NULL or "single" — every test source compiled and linked into
+     *                       one test binary (single main, default).
+     *   "each"           — each test source linked into its own binary
+     *                       (each file has its own main, all are run). */
+    char *mode;
 } NowSources;
 
 /* Compile configuration (§1.5) */

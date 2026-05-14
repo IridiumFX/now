@@ -3326,21 +3326,144 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         free(obj);
     }
 
-    now_filelist_free(&test_sources);
-
     if (errors) {
         now_filelist_free(&test_objects);
+        now_filelist_free(&test_sources);
         return -1;
     }
 
     if (test_objects.count == 0) {
         now_filelist_free(&test_objects);
+        now_filelist_free(&test_sources);
         if (result) {
             result->code = NOW_OK;
             result->message[0] = '\0';
         }
         return 0;
     }
+
+    /* Mode dispatch: "single" (default) links everything into one binary
+     * with a single main(); "each" / "per-file" produces one binary per
+     * test source, runs each one, reports aggregate pass/fail. */
+    {
+        const char *mode = p->tests.mode;
+        int per_file = mode && (strcmp(mode, "each") == 0
+                              || strcmp(mode, "per-file") == 0);
+
+        if (per_file) {
+            char *test_bin_dir = now_path_join(basedir, "target/test/bin");
+            now_mkdir_p(test_bin_dir);
+
+            int has_cxx = 0;
+            for (size_t i = 0; i < p->langs.count; i++)
+                if (strcmp(p->langs.items[i], "c++") == 0) { has_cxx = 1; break; }
+
+            int pass = 0, fail = 0;
+
+            for (size_t t = 0; t < test_objects.count; t++) {
+                /* Derive test name from the source filename basename. */
+                const char *src = test_sources.paths[t];
+                const char *base = strrchr(src, '/');
+                if (!base) base = strrchr(src, '\\');
+                base = base ? base + 1 : src;
+                char name[256];
+                snprintf(name, sizeof(name), "%s", base);
+                char *dot = strchr(name, '.');
+                if (dot) *dot = '\0';
+
+                char tbin[PATH_MAX];
+#ifdef _WIN32
+                snprintf(tbin, sizeof(tbin), "%s/%s.exe", test_bin_dir, name);
+#else
+                snprintf(tbin, sizeof(tbin), "%s/%s", test_bin_dir, name);
+#endif
+
+                const char *largv[512];
+                int largc = 0;
+                char *lbufs[64];
+                size_t nl = 0;
+
+                if (ctx->toolchain.is_msvc) {
+                    largv[largc++] = "link.exe";
+                    largv[largc++] = "/nologo";
+                    char out_buf[PATH_MAX + 8];
+                    snprintf(out_buf, sizeof(out_buf), "/OUT:%s", tbin);
+                    largv[largc++] = out_buf;
+                    largv[largc++] = test_objects.paths[t];
+                    for (size_t i = 0; i < ctx->objects.count; i++)
+                        largv[largc++] = ctx->objects.paths[i];
+                    for (size_t i = 0; i < p->link.libs.count && nl < 64; i++) {
+                        size_t len = strlen(p->link.libs.items[i]) + 5;
+                        lbufs[nl] = malloc(len);
+                        if (lbufs[nl]) {
+                            snprintf(lbufs[nl], len, "%s.lib", p->link.libs.items[i]);
+                            largv[largc++] = lbufs[nl];
+                            nl++;
+                        }
+                    }
+                    largv[largc] = NULL;
+                } else {
+                    largv[largc++] = has_cxx ? ctx->toolchain.cxx : ctx->toolchain.cc;
+                    largv[largc++] = test_objects.paths[t];
+                    for (size_t i = 0; i < ctx->objects.count; i++)
+                        largv[largc++] = ctx->objects.paths[i];
+                    for (size_t i = 0; i < p->link.libs.count && nl < 64; i++) {
+                        size_t len = strlen(p->link.libs.items[i]) + 3;
+                        lbufs[nl] = malloc(len);
+                        if (lbufs[nl]) {
+                            snprintf(lbufs[nl], len, "-l%s", p->link.libs.items[i]);
+                            largv[largc++] = lbufs[nl];
+                            nl++;
+                        }
+                    }
+                    largv[largc++] = "-o";
+                    largv[largc++] = tbin;
+                    largv[largc] = NULL;
+                }
+
+                int link_rc = now_exec(largv, ctx->verbose);
+                for (size_t i = 0; i < nl; i++) free(lbufs[i]);
+
+                if (link_rc != 0) {
+                    fprintf(stderr, "  [FAIL] %s — link error (exit %d)\n", name, link_rc);
+                    fail++;
+                    continue;
+                }
+
+                const char *run_argv[] = { tbin, NULL };
+                int run_rc = now_exec(run_argv, ctx->verbose);
+                if (run_rc == 0) {
+                    if (ctx->verbose) fprintf(stderr, "  [PASS] %s\n", name);
+                    pass++;
+                } else {
+                    fprintf(stderr, "  [FAIL] %s (exit %d)\n", name, run_rc);
+                    fail++;
+                }
+            }
+
+            fprintf(stderr, "  tests: %d passed, %d failed (mode=each)\n",
+                    pass, fail);
+
+            free(test_bin_dir);
+            now_filelist_free(&test_objects);
+            now_filelist_free(&test_sources);
+
+            if (fail > 0) {
+                if (result) {
+                    result->code = NOW_ERR_TEST;
+                    snprintf(result->message, sizeof(result->message),
+                             "%d test(s) failed", fail);
+                }
+                return -1;
+            }
+            if (result) { result->code = NOW_OK; result->message[0] = '\0'; }
+            return 0;
+        }
+    }
+
+    /* Single-binary mode (default): link everything together, run once.
+     * test_sources is no longer needed past this point. */
+    now_filelist_free(&test_sources);
 
     /* Link test binary: test objects + production objects */
     char *test_bin_dir = now_path_join(basedir, "target/bin");

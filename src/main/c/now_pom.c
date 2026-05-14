@@ -225,6 +225,7 @@ static void load_sources(NowSources *dst, const PastaValue *src) {
     dst->headers         = dup_map_str(src, "headers");
     dst->private_headers = dup_map_str(src, "private");
     dst->pattern         = dup_map_str(src, "pattern");
+    dst->mode            = dup_map_str(src, "mode");
     load_strarray(&dst->include, pasta_map_get(src, "include"));
     load_strarray(&dst->exclude, pasta_map_get(src, "exclude"));
 }
@@ -353,6 +354,7 @@ static void now_sources_free(NowSources *s) {
     free(s->headers);
     free(s->private_headers);
     free(s->pattern);
+    free(s->mode);
     now_strarray_free(&s->include);
     now_strarray_free(&s->exclude);
 }
