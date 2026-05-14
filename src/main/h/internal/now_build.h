@@ -46,6 +46,11 @@ typedef struct {
     NowFileList       dep_includes;/* -I paths from resolved deps */
     NowFileList       dep_libdirs; /* -L paths from resolved deps */
     NowFileList       dep_libs;    /* -l names from resolved deps */
+    /* Raw lib dirs (no -L prefix). Used at test-run time on Windows to
+     * stage *.dll files next to the test binary, since Windows has no
+     * RPATH and the loader's search rules check the binary's own
+     * directory first. POSIX gets RPATH at link time instead. */
+    NowFileList       dep_lib_dirs_raw;
     int               verbose;
     int               jobs;        /* max parallel jobs (0 = auto) */
 } NowBuildCtx;

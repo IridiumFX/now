@@ -521,6 +521,39 @@ static int has_java_lang(const NowProject *p) {
     return has_lang(p, "java");
 }
 
+/* Copy *.dll files from each dep_lib_dirs_raw entry into dest_dir, so
+ * Windows test binaries find their shared deps via the loader's first
+ * search path (the binary's own directory). No-op on POSIX, where
+ * RPATH baked into the binary at link time does the same job. */
+static void stage_dep_dlls(const NowBuildCtx *ctx, const char *dest_dir) {
+#ifdef _WIN32
+    if (!ctx || !dest_dir) return;
+    for (size_t i = 0; i < ctx->dep_lib_dirs_raw.count; i++) {
+        const char *dir = ctx->dep_lib_dirs_raw.paths[i];
+        if (!dir) continue;
+
+        char *pattern = now_path_join(dir, "*.dll");
+        if (!pattern) continue;
+
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        free(pattern);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (fd.cFileName[0] == '.') continue;
+            char *src = now_path_join(dir, fd.cFileName);
+            char *dst = now_path_join(dest_dir, fd.cFileName);
+            if (src && dst) (void)now_file_copy(src, dst);
+            free(src);
+            free(dst);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    (void)ctx; (void)dest_dir;
+#endif
+}
+
 /* Apply 'tests.env' entries to this process's environment so child test
  * binaries inherit them. Values pass through unchanged; if a relative
  * path is meant, it'll resolve against the test binary's CWD (which the
@@ -973,6 +1006,7 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     now_filelist_init(&ctx->dep_includes);
     now_filelist_init(&ctx->dep_libdirs);
     now_filelist_init(&ctx->dep_libs);
+    now_filelist_init(&ctx->dep_lib_dirs_raw);
 
     now_lang_registry_init();
     now_toolchain_resolve(&ctx->toolchain, project);
@@ -3409,14 +3443,21 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
         rc = now_exec(argv, ctx->verbose);
 
-        /* Free include / define args */
+        /* Free the strdup'd / malloc'd -I/-D / /I //D flags WE own.
+         * Skip pointers borrowed from ctx->dep_includes (the filelist
+         * owns those; freeing here would double-free at ctx teardown). */
         for (int a = 1; a < argc; a++) {
             if (argv[a] == src_full || argv[a] == obj) continue;
-            /* Free the strdup'd / malloc'd -I /-D / /I //D flags */
             const char *p_a = argv[a];
-            if ((p_a[0] == '-' || p_a[0] == '/') &&
-                (p_a[1] == 'I' || p_a[1] == 'D'))
-                free((char *)argv[a]);
+            if (!((p_a[0] == '-' || p_a[0] == '/') &&
+                  (p_a[1] == 'I' || p_a[1] == 'D')))
+                continue;
+            /* Skip if this pointer is owned by ctx->dep_includes. */
+            int borrowed = 0;
+            for (size_t k = 0; k < ctx->dep_includes.count; k++) {
+                if (argv[a] == ctx->dep_includes.paths[k]) { borrowed = 1; break; }
+            }
+            if (!borrowed) free((char *)argv[a]);
         }
         free(inc_src);
         free(inc_hdr);
@@ -3467,6 +3508,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         if (per_file) {
             char *test_bin_dir = now_path_join(basedir, "target/test/bin");
             now_mkdir_p(test_bin_dir);
+            /* Windows: stage dep DLLs into the bin dir so the loader
+             * finds them at first-search-path. POSIX no-op (RPATH). */
+            stage_dep_dlls(ctx, test_bin_dir);
 
             int has_cxx = 0;
             for (size_t i = 0; i < p->langs.count; i++)
@@ -3622,6 +3666,8 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
     /* Link test binary: test objects + production objects */
     char *test_bin_dir = now_path_join(basedir, "target/bin");
     now_mkdir_p(test_bin_dir);
+    /* Windows: stage dep DLLs alongside the test binary. */
+    stage_dep_dlls(ctx, test_bin_dir);
 
     char test_bin[512];
     const char *proj_name = p->artifact ? p->artifact : "test";
@@ -3907,4 +3953,5 @@ NOW_API void now_build_free(NowBuildCtx *ctx) {
     now_filelist_free(&ctx->dep_includes);
     now_filelist_free(&ctx->dep_libdirs);
     now_filelist_free(&ctx->dep_libs);
+    now_filelist_free(&ctx->dep_lib_dirs_raw);
 }

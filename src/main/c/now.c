@@ -204,9 +204,7 @@ static int procure_and_inject_deps(const NowProject *project,
                 }
 #if !defined(_WIN32)
                 /* POSIX: embed RPATH so consumer binaries find the shared
-                 * library at run time without LD_LIBRARY_PATH gymnastics.
-                 * Windows uses PATH lookup at process start instead — set
-                 * separately by the test-runner before exec. */
+                 * library at runtime without LD_LIBRARY_PATH gymnastics. */
                 if (!msvc) {
                     size_t rlen = strlen(lib_dir) + 16;
                     char *rflag = (char *)malloc(rlen);
@@ -217,6 +215,7 @@ static int procure_and_inject_deps(const NowProject *project,
                     }
                 }
 #endif
+                now_filelist_push(&ctx->dep_lib_dirs_raw, lib_dir);
                 free(lib_dir);
             }
 
