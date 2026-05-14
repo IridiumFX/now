@@ -219,6 +219,50 @@ static void apply_maven_defaults(NowProject *p) {
 
 /* ---- Section loaders ---- */
 
+/* Load a KEY=VAL string array from either an array of "KEY=VAL" strings
+ * or a map { KEY: "VAL", ... }. Used for tests.defines / tests.env so
+ * users can write either syntax.
+ *
+ * quote_values: in MAP form only, wrap each value in literal "..." so
+ * preprocessor consumers get a C string literal. This is the right
+ * semantics for tests.defines (paths going to fopen are strings) and
+ * the wrong semantics for tests.env (env vars are raw); the caller
+ * picks. Array form ALWAYS passes through unchanged. */
+static void load_kv_strarray(NowStrArray *dst, const PastaValue *src,
+                              int quote_values) {
+    if (!src) return;
+    if (pasta_type(src) == PASTA_ARRAY) {
+        size_t n = pasta_count(src);
+        for (size_t i = 0; i < n; i++) {
+            const PastaValue *e = pasta_array_get(src, i);
+            if (e && pasta_type(e) == PASTA_STRING)
+                now_strarray_push(dst, pasta_get_string(e));
+        }
+    } else if (pasta_type(src) == PASTA_MAP) {
+        size_t n = pasta_count(src);
+        for (size_t i = 0; i < n; i++) {
+            const char *k = pasta_map_key(src, i);
+            const PastaValue *v = pasta_map_value(src, i);
+            if (!k || !v || pasta_type(v) != PASTA_STRING) continue;
+            size_t klen = strlen(k);
+            const char *vs = pasta_get_string(v);
+            size_t vlen = vs ? strlen(vs) : 0;
+            size_t buflen = klen + 1 + (quote_values ? 2 : 0) + vlen + 1;
+            char *buf = (char *)malloc(buflen);
+            if (!buf) continue;
+            size_t off = 0;
+            memcpy(buf + off, k, klen); off += klen;
+            buf[off++] = '=';
+            if (quote_values) buf[off++] = '"';
+            if (vs) { memcpy(buf + off, vs, vlen); off += vlen; }
+            if (quote_values) buf[off++] = '"';
+            buf[off] = '\0';
+            now_strarray_push(dst, buf);
+            free(buf);
+        }
+    }
+}
+
 static void load_sources(NowSources *dst, const PastaValue *src) {
     if (!src || pasta_type(src) != PASTA_MAP) return;
     dst->dir             = dup_map_str(src, "dir");
@@ -228,6 +272,8 @@ static void load_sources(NowSources *dst, const PastaValue *src) {
     dst->mode            = dup_map_str(src, "mode");
     load_strarray(&dst->include, pasta_map_get(src, "include"));
     load_strarray(&dst->exclude, pasta_map_get(src, "exclude"));
+    load_kv_strarray(&dst->defines, pasta_map_get(src, "defines"), 1);
+    load_kv_strarray(&dst->env,     pasta_map_get(src, "env"),     0);
 }
 
 static void load_compile(NowCompile *dst, const PastaValue *src) {
@@ -357,6 +403,8 @@ static void now_sources_free(NowSources *s) {
     free(s->mode);
     now_strarray_free(&s->include);
     now_strarray_free(&s->exclude);
+    now_strarray_free(&s->defines);
+    now_strarray_free(&s->env);
 }
 
 static void now_compile_init(NowCompile *c) {

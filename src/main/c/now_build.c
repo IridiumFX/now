@@ -64,36 +64,81 @@ NOW_API int now_cpu_count(void) {
 /* Build a Windows command-line string from argv.
  * Caller must free the returned string. */
 #ifdef _WIN32
-static char *build_cmdline(const char *const *argv) {
-    size_t len = 0;
-    for (const char *const *a = argv; *a; a++)
-        len += strlen(*a) + 3;
+/* Quote an argv element for Windows CreateProcessA. CommandLineToArgvW
+ * (the CRT's argv parser) interprets bare `"` as quote toggles and
+ * collapses runs of backslashes per Microsoft's quoting rules. We need
+ * to preserve literal quotes (e.g. -DFOO="bar") that the caller put in.
+ *
+ * Rule: if arg has no whitespace and no quote, pass as-is. Otherwise
+ * wrap in "..." and escape any literal " as \", doubling backslashes
+ * that precede a quote (MSDN: "Parsing C++ Command-Line Arguments"). */
+static void append_quoted_win(char *dst, size_t dstcap, const char *arg) {
+    int needs_quote = (*arg == '\0') ||
+                       strchr(arg, ' ') || strchr(arg, '\t') ||
+                       strchr(arg, '"');
+    size_t pos = strlen(dst);
+    if (!needs_quote) {
+        size_t n = strlen(arg);
+        if (pos + n + 1 > dstcap) return;
+        memcpy(dst + pos, arg, n);
+        dst[pos + n] = '\0';
+        return;
+    }
+    if (pos + 1 < dstcap) dst[pos++] = '"';
+    size_t backslashes = 0;
+    for (const char *p = arg; *p; p++) {
+        if (*p == '\\') {
+            backslashes++;
+            if (pos + 1 < dstcap) dst[pos++] = '\\';
+        } else if (*p == '"') {
+            /* Double the preceding backslashes, then escape the quote. */
+            for (size_t b = 0; b < backslashes; b++)
+                if (pos + 1 < dstcap) dst[pos++] = '\\';
+            if (pos + 1 < dstcap) dst[pos++] = '\\';
+            if (pos + 1 < dstcap) dst[pos++] = '"';
+            backslashes = 0;
+        } else {
+            backslashes = 0;
+            if (pos + 1 < dstcap) dst[pos++] = *p;
+        }
+    }
+    /* Double trailing backslashes before the closing quote. */
+    for (size_t b = 0; b < backslashes; b++)
+        if (pos + 1 < dstcap) dst[pos++] = '\\';
+    if (pos + 1 < dstcap) dst[pos++] = '"';
+    dst[pos] = '\0';
+}
 
-    char *cmdline = malloc(len + 1);
+static char *build_cmdline(const char *const *argv) {
+    /* Worst-case size: every char doubled (for backslash escape) + 2 quotes
+     * per arg + separators. Conservative. */
+    size_t len = 1;
+    for (const char *const *a = argv; *a; a++)
+        len += strlen(*a) * 2 + 3;
+
+    char *cmdline = malloc(len);
     if (!cmdline) return NULL;
     cmdline[0] = '\0';
 
     for (const char *const *a = argv; *a; a++) {
         if (a != argv) strcat(cmdline, " ");
-        if (strchr(*a, ' ')) {
-            strcat(cmdline, "\"");
-            strcat(cmdline, *a);
-            strcat(cmdline, "\"");
-        } else {
-            strcat(cmdline, *a);
-        }
+        append_quoted_win(cmdline, len, *a);
     }
     return cmdline;
 }
 #endif
 
-NOW_API int now_exec(const char *const *argv, int verbose) {
+/* Spawn argv with optional working directory. cwd == NULL inherits the
+ * parent's CWD. Used by the test phase so test binaries see the module
+ * root as their CWD (so fopen("src/test/resources/...") works). */
+NOW_API int now_exec_in_dir(const char *const *argv, int verbose, const char *cwd) {
     if (!argv || !argv[0]) return -1;
 
     if (verbose) {
         fprintf(stderr, " ");
         for (const char *const *a = argv; *a; a++)
             fprintf(stderr, " %s", *a);
+        if (cwd) fprintf(stderr, "   (cwd: %s)", cwd);
         fprintf(stderr, "\n");
     }
 
@@ -112,7 +157,7 @@ NOW_API int now_exec(const char *const *argv, int verbose) {
     memset(&pi, 0, sizeof(pi));
 
     if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
-                        0, NULL, NULL, &si, &pi)) {
+                        0, NULL, cwd, &si, &pi)) {
         free(cmdline);
         return -1;
     }
@@ -129,6 +174,7 @@ NOW_API int now_exec(const char *const *argv, int verbose) {
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
+        if (cwd && chdir(cwd) != 0) _exit(126);
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
@@ -137,6 +183,10 @@ NOW_API int now_exec(const char *const *argv, int verbose) {
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return -1;
 #endif
+}
+
+NOW_API int now_exec(const char *const *argv, int verbose) {
+    return now_exec_in_dir(argv, verbose, NULL);
 }
 
 /* ---- Parallel process pool ---- */
@@ -469,6 +519,30 @@ static int has_lang(const NowProject *p, const char *lang_id) {
 
 static int has_java_lang(const NowProject *p) {
     return has_lang(p, "java");
+}
+
+/* Apply 'tests.env' entries to this process's environment so child test
+ * binaries inherit them. Values pass through unchanged; if a relative
+ * path is meant, it'll resolve against the test binary's CWD (which the
+ * test phase sets to the module root). */
+static void apply_tests_env(const NowStrArray *env_arr) {
+    if (!env_arr) return;
+    for (size_t i = 0; i < env_arr->count; i++) {
+        const char *kv = env_arr->items[i];
+        if (!kv) continue;
+        const char *eq = strchr(kv, '=');
+        if (!eq) continue;
+        size_t klen = (size_t)(eq - kv);
+        if (klen == 0 || klen >= 256) continue;
+        char key[256];
+        memcpy(key, kv, klen);
+        key[klen] = '\0';
+#ifdef _WIN32
+        SetEnvironmentVariableA(key, eq + 1);
+#else
+        setenv(key, eq + 1, 1);
+#endif
+    }
 }
 
 /* Translate user-facing language-standard names to the spelling the
@@ -3235,6 +3309,16 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = strdup(inc_flag);
             }
 
+            /* tests.defines — extra -DKEY=VAL macros (e.g. fixture paths) */
+            for (size_t ii = 0; ii < p->tests.defines.count && argc < 60; ii++) {
+                size_t blen = strlen(p->tests.defines.items[ii]) + 4;
+                char *d = (char *)malloc(blen);
+                if (d) {
+                    snprintf(d, blen, "/D%s", p->tests.defines.items[ii]);
+                    argv[argc++] = d;
+                }
+            }
+
             argv[argc++] = "/c";
             argv[argc++] = src_full;
 
@@ -3290,6 +3374,16 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 argv[argc++] = strdup(inc_flag);
             }
 
+            /* tests.defines — extra -DKEY=VAL macros (e.g. fixture paths) */
+            for (size_t ii = 0; ii < p->tests.defines.count && argc < 60; ii++) {
+                size_t blen = strlen(p->tests.defines.items[ii]) + 4;
+                char *d = (char *)malloc(blen);
+                if (d) {
+                    snprintf(d, blen, "-D%s", p->tests.defines.items[ii]);
+                    argv[argc++] = d;
+                }
+            }
+
             argv[argc++] = "-c";
             argv[argc++] = src_full;
             argv[argc++] = "-o";
@@ -3299,12 +3393,13 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
         rc = now_exec(argv, ctx->verbose);
 
-        /* Free include args */
+        /* Free include / define args */
         for (int a = 1; a < argc; a++) {
             if (argv[a] == src_full || argv[a] == obj) continue;
-            /* Free the strdup'd -I / /I flags */
+            /* Free the strdup'd / malloc'd -I /-D / /I //D flags */
             const char *p_a = argv[a];
-            if ((p_a[0] == '-' || p_a[0] == '/') && p_a[1] == 'I')
+            if ((p_a[0] == '-' || p_a[0] == '/') &&
+                (p_a[1] == 'I' || p_a[1] == 'D'))
                 free((char *)argv[a]);
         }
         free(inc_src);
@@ -3349,6 +3444,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         const char *mode = p->tests.mode;
         int per_file = mode && (strcmp(mode, "each") == 0
                               || strcmp(mode, "per-file") == 0);
+
+        /* Export tests.env into our env so test binaries inherit it. */
+        apply_tests_env(&p->tests.env);
 
         if (per_file) {
             char *test_bin_dir = now_path_join(basedir, "target/test/bin");
@@ -3430,8 +3528,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                     continue;
                 }
 
+                /* Run each binary with CWD = module root so relative
+                 * fixture paths (src/test/resources/...) resolve correctly. */
                 const char *run_argv[] = { tbin, NULL };
-                int run_rc = now_exec(run_argv, ctx->verbose);
+                int run_rc = now_exec_in_dir(run_argv, ctx->verbose, basedir);
                 if (run_rc == 0) {
                     if (ctx->verbose) fprintf(stderr, "  [PASS] %s\n", name);
                     pass++;
@@ -3550,9 +3650,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         return -1;
     }
 
-    /* Execute the test binary */
+    /* Execute the test binary with CWD = module root so relative fixture
+     * paths resolve from the project root (not target/bin/). */
     const char *test_argv[] = { test_bin, NULL };
-    rc = now_exec(test_argv, ctx->verbose);
+    rc = now_exec_in_dir(test_argv, ctx->verbose, basedir);
 
     if (rc != 0) {
         if (result) {

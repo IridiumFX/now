@@ -35,6 +35,14 @@ typedef struct {
      *   "each"           — each test source linked into its own binary
      *                       (each file has its own main, all are run). */
     char *mode;
+    /* For the 'tests' section only:
+     *   defines — extra -DKEY=VAL macros injected at test compile time
+     *             (lets tests bake in fixture paths à la
+     *             -DVVM_TEST_RESOURCES="src/test/resources").
+     *   env     — KEY=VAL pairs set in each test binary's environment
+     *             at launch (sibling of defines for runtime lookup). */
+    NowStrArray defines;
+    NowStrArray env;
 } NowSources;
 
 /* Compile configuration (§1.5) */

@@ -259,6 +259,25 @@ tests: {
 
 **`each`** suits codebases migrated from CMake/CTest or any framework where each `test_*.c` is an independent executable with its own `main()`. Binaries land under `target/test/bin/<name>[.exe]`; `now test` runs them in sequence and reports `N passed, M failed`. Exit non-zero if any test fails.
 
+### Fixture / resource paths in tests
+
+Every test binary (both modes) is launched with **CWD = module root**, so relative paths like `fopen("src/test/resources/...", "rb")` Just Work without any pasta config.
+
+If a test needs the fixture path baked in as a C string literal (CMake's `-DFOO='"..."'` idiom) or exposed as an environment variable, add either to the `tests:` block:
+
+```pasta
+tests: {
+  dir: "src/test/c",
+  mode: "each",
+  defines: { FIXTURE_DIR: "src/test/resources" },  # → -DFIXTURE_DIR="src/test/resources"
+  env:     { FIX_DIR:     "src/test/resources" }   # → setenv before each launch
+}
+```
+
+`defines` are injected at test-compile time and auto-quoted (map form gives C string literals; array form `["KEY=VAL"]` passes through verbatim if you want a numeric or bare-token macro). `env` values are set in `now`'s process so every spawned test inherits them — raw, no quoting.
+
+The three mechanisms compose: pick CWD-relative (zero config), compile-time `-D` (argv[0]-independent), or runtime env (decoupled from compile), whichever fits each test.
+
 ---
 
 ## Performance expectations on GitHub runners
