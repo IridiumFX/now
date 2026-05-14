@@ -279,6 +279,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* TODO: --target triple parsing is done but not yet wired into the build.
+     * Cross-compilation support is still experimental — accept the flag but
+     * silence the unused-variable warning until we plumb it through. */
+    (void)target_str;
+
     /* Handle version and help */
     if (strcmp(phase, "version") == 0 || strcmp(phase, "--version") == 0) {
         printf("now %s\n", now_version());
@@ -698,6 +703,7 @@ int main(int argc, char *argv[]) {
         free(hdr_path);
         free(hdr_rel);
 skip_header:
+        ;  /* C99 requires a statement after a label; declarations aren't statements until C23 */
 
         /* Write placeholder test */
         char tst_name[64];

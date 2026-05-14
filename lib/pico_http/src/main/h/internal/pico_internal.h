@@ -40,6 +40,7 @@
 #else
   #include <sys/socket.h>
   #include <sys/types.h>
+  #include <sys/time.h>     /* struct timeval (SO_RCVTIMEO / SO_SNDTIMEO) */
   #include <netinet/in.h>
   #include <netdb.h>
   #include <unistd.h>

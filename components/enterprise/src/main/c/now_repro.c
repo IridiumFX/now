@@ -16,17 +16,6 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef _WIN32
-static char *strndup_compat(const char *s, size_t n) {
-    size_t len = strlen(s);
-    if (len > n) len = n;
-    char *r = (char *)malloc(len + 1);
-    if (r) { memcpy(r, s, len); r[len] = '\0'; }
-    return r;
-}
-#define strndup strndup_compat
-#endif
-
 /* ---- Config ---- */
 
 NOW_API void now_repro_init(NowReproConfig *cfg) {

@@ -19,14 +19,6 @@
 #ifdef _WIN32
   #include <windows.h>
   #include <direct.h>
-  static char *strndup_compat(const char *s, size_t n) {
-      size_t len = strlen(s);
-      if (len > n) len = n;
-      char *r = (char *)malloc(len + 1);
-      if (r) { memcpy(r, s, len); r[len] = '\0'; }
-      return r;
-  }
-  #define strndup strndup_compat
 #else
   #include <unistd.h>
   #include <sys/wait.h>

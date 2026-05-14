@@ -33,6 +33,7 @@
   #include <sys/wait.h>
   #include <unistd.h>
   #include <dirent.h>
+  #include <pthread.h>
   #ifdef __APPLE__
     #include <sys/sysctl.h>
   #endif
@@ -1818,8 +1819,9 @@ static int build_java_link(NowBuildCtx *ctx, NowResult *result) {
 }
 
 /* Compile and run Java tests.
- * javac --release N -d target/test-classes -cp target/classes:deps src/test/java/*.java
- * java -cp target/test-classes:target/classes:deps MainTestClass
+ *   javac --release N -d target/test-classes -cp target/classes:deps \
+ *         src/test/java/[star].java
+ *   java -cp target/test-classes:target/classes:deps MainTestClass
  * Returns 0 on success. */
 static int build_java_test(NowBuildCtx *ctx, NowResult *result) {
     const NowProject *p = ctx->project;

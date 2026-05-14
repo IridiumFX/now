@@ -26,17 +26,6 @@
   #define getcwd_compat getcwd
 #endif
 
-#ifdef _WIN32
-static char *strndup_compat(const char *s, size_t n) {
-    size_t len = strlen(s);
-    if (len > n) len = n;
-    char *r = (char *)malloc(len + 1);
-    if (r) { memcpy(r, s, len); r[len] = '\0'; }
-    return r;
-}
-#define strndup strndup_compat
-#endif
-
 /* ---- Audit operations ---- */
 
 NOW_API void now_audit_init(NowAuditReport *report) {
