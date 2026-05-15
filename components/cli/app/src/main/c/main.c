@@ -304,8 +304,10 @@ int main(int argc, char *argv[]) {
         }
         char *target = now_path_join(cwd, "target");
         if (target && now_path_exists(target)) {
-            if (verbose) fprintf(stderr, "cleaning %s\n", target);
             rmdir_recursive(target);
+            fprintf(stderr, "  removed %s\n", target);
+        } else {
+            fprintf(stderr, "  nothing to clean\n");
         }
         free(target);
         return 0;
@@ -938,7 +940,7 @@ skip_header:
             fprintf(stderr, "error: failed to clean build cache\n");
             return 1;
         }
-        if (verbose) fprintf(stderr, "build cache cleaned\n");
+        fprintf(stderr, "  build cache cleaned\n");
         return 0;
     }
 
@@ -1084,8 +1086,8 @@ skip_header:
         rc = now_procure(project, &opts, &result);
         if (rc != 0)
             fprintf(stderr, "error: %s\n", result.message);
-        else if (verbose)
-            fprintf(stderr, "procure: done\n");
+        else
+            fprintf(stderr, "  procure: done\n");
 
     } else if (strcmp(phase, "dep:updates") == 0) {
         printf("Checking for dependency updates...\n");
@@ -1178,6 +1180,11 @@ skip_header:
             rc = now_package(project, cwd, verbose, &result);
             if (rc != 0)
                 fprintf(stderr, "error: %s\n", result.message);
+            else
+                fprintf(stderr, "  packaged %s:%s:%s\n",
+                        project->group ? project->group : "?",
+                        project->artifact ? project->artifact : "?",
+                        project->version ? project->version : "?");
         }
 
     } else if (strcmp(phase, "install") == 0) {
@@ -1189,6 +1196,11 @@ skip_header:
             rc = now_install(project, cwd, verbose, &result);
             if (rc != 0)
                 fprintf(stderr, "error: %s\n", result.message);
+            else
+                fprintf(stderr, "  installed %s:%s:%s\n",
+                        project->group ? project->group : "?",
+                        project->artifact ? project->artifact : "?",
+                        project->version ? project->version : "?");
         }
 
     } else if (strcmp(phase, "publish") == 0) {
@@ -1204,6 +1216,11 @@ skip_header:
                 rc = now_publish(project, cwd, repo_url, verbose, &result);
                 if (rc != 0)
                     fprintf(stderr, "error: %s\n", result.message);
+                else
+                    fprintf(stderr, "  published %s:%s:%s\n",
+                            project->group ? project->group : "?",
+                            project->artifact ? project->artifact : "?",
+                            project->version ? project->version : "?");
             }
         }
 
