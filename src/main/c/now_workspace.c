@@ -20,6 +20,24 @@ NOW_API int now_is_workspace(const NowProject *project) {
 
 /* ---- Module graph construction ---- */
 
+/* Upper-case + sanitize an artifact name to a C macro stem.
+ * "basta" -> "BASTA", "starletc-cstar" -> "STARLETC_CSTAR".
+ * Caller frees. Returns NULL on OOM/empty input. */
+static char *upper_macro(const char *name) {
+    if (!name || !*name) return NULL;
+    size_t n = strlen(name);
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') out[i] = (char)(c - 32);
+        else if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') out[i] = c;
+        else out[i] = '_';
+    }
+    out[n] = '\0';
+    return out;
+}
+
 /* Find module index by artifact name. Returns -1 if not found. */
 static int find_module(NowWorkspace *ws, const char *artifact) {
     for (size_t i = 0; i < ws->module_count; i++) {
@@ -61,6 +79,59 @@ static int find_sibling(NowWorkspace *ws, const char *dep_id) {
     }
 
     return find_module(ws, artifact);
+}
+
+/* For each workspace-sibling dep declared in `consumer`'s deps:,
+ * inject the producer's public artifacts so the consumer compiles
+ * and links without re-declaring them:
+ *   compile.includes  += <sibling.dir>/src/main/h
+ *   link.libdirs      += <sibling.dir>/target/bin
+ *   link.libs         += sibling.output.name (or sibling.artifact)
+ *   compile.defines   += <UPPER>_STATIC      (only if sibling is static)
+ *
+ * Header-only siblings get only the include path; executable
+ * siblings are skipped (not linkable). */
+static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
+    NowModule *consumer = &ws->modules[consumer_idx];
+    NowProject *cp = consumer->project;
+    if (!cp) return;
+
+    for (size_t d = 0; d < cp->deps.count; d++) {
+        const char *dep_id = cp->deps.items[d].id;
+        int sib = find_sibling(ws, dep_id);
+        if (sib < 0 || sib == consumer_idx) continue;
+
+        NowProject *sp = ws->modules[sib].project;
+        const char *sdir = ws->modules[sib].dir;
+        if (!sp || !sdir) continue;
+
+        const char *otype = sp->output.type;
+        if (otype && strcmp(otype, "executable") == 0) continue;
+
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/src/main/h", sdir);
+        now_strarray_push(&cp->compile.includes, path);
+
+        int is_header_only = otype && strcmp(otype, "header-only") == 0;
+        if (!is_header_only) {
+            snprintf(path, sizeof(path), "%s/target/bin", sdir);
+            now_strarray_push(&cp->link.libdirs, path);
+
+            const char *lib = sp->output.name ? sp->output.name : sp->artifact;
+            if (lib) now_strarray_push(&cp->link.libs, lib);
+        }
+
+        if (otype && strcmp(otype, "static") == 0) {
+            const char *base = sp->output.name ? sp->output.name : sp->artifact;
+            char *m = upper_macro(base);
+            if (m) {
+                char def[256];
+                snprintf(def, sizeof(def), "%s_STATIC", m);
+                now_strarray_push(&cp->compile.defines, def);
+                free(m);
+            }
+        }
+    }
 }
 
 NOW_API int now_workspace_init(NowWorkspace *ws, NowProject *root,
@@ -148,6 +219,13 @@ NOW_API int now_workspace_init(NowWorkspace *ws, NowProject *root,
             }
         }
     }
+
+    /* Auto-propagate each sibling's public artifacts (include dir,
+     * libdir, lib name, and <UPPER>_STATIC define for static libs)
+     * into every dependent consumer. Mirrors Maven `compile`-scope
+     * transitive includes without per-consumer re-declaration. */
+    for (size_t i = 0; i < nmod; i++)
+        inject_sibling_artifacts(ws, (int)i);
 
     if (result) {
         result->code = NOW_OK;

@@ -2547,6 +2547,57 @@ static void test_workspace_is_null(void) {
     PASS();
 }
 
+static int strarray_contains_suffix(const NowStrArray *a, const char *suf) {
+    size_t n = strlen(suf);
+    for (size_t i = 0; i < a->count; i++) {
+        size_t m = strlen(a->items[i]);
+        if (m >= n && strcmp(a->items[i] + m - n, suf) == 0) return 1;
+    }
+    return 0;
+}
+static int strarray_contains(const NowStrArray *a, const char *s) {
+    for (size_t i = 0; i < a->count; i++)
+        if (strcmp(a->items[i], s) == 0) return 1;
+    return 0;
+}
+
+static void test_workspace_inject_sibling(void) {
+    TEST("workspace: auto-injects sibling include/libdir/lib + STATIC define");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/workspace/now.pasta", NOW_TEST_RESOURCES);
+    NowResult res;
+    NowProject *p = now_project_load(path, &res);
+    if (!p) { FAIL(res.message); return; }
+
+    char basedir[512];
+    snprintf(basedir, sizeof(basedir), "%s/workspace", NOW_TEST_RESOURCES);
+
+    NowWorkspace ws;
+    int rc = now_workspace_init(&ws, p, basedir, &res);
+    if (rc != 0) { FAIL(res.message); now_project_free(p); return; }
+
+    /* Find the 'app' module — it depends on the static 'core' sibling. */
+    int app_idx = -1;
+    for (size_t i = 0; i < ws.module_count; i++)
+        if (strcmp(ws.modules[i].name, "app") == 0) { app_idx = (int)i; break; }
+    if (app_idx < 0) { FAIL("missing app module"); now_workspace_free(&ws); now_project_free(p); return; }
+
+    NowProject *app = ws.modules[app_idx].project;
+    int ok_inc  = strarray_contains_suffix(&app->compile.includes, "/core/src/main/h");
+    int ok_dir  = strarray_contains_suffix(&app->link.libdirs,     "/core/target/bin");
+    int ok_lib  = strarray_contains(&app->link.libs,               "core");
+    int ok_def  = strarray_contains(&app->compile.defines,         "CORE_STATIC");
+
+    now_workspace_free(&ws);
+    now_project_free(p);
+
+    if (!ok_inc) { FAIL("missing injected include for core/src/main/h"); return; }
+    if (!ok_dir) { FAIL("missing injected libdir for core/target/bin"); return; }
+    if (!ok_lib) { FAIL("missing injected -lcore"); return; }
+    if (!ok_def) { FAIL("missing injected CORE_STATIC define"); return; }
+    PASS();
+}
+
 /* ---- Plugin system ---- */
 
 static void test_plugin_is_builtin(void) {
@@ -6292,6 +6343,7 @@ int main(void) {
     test_workspace_is_null();
     test_workspace_init();
     test_workspace_topo_sort();
+    test_workspace_inject_sibling();
 
     printf("\n  Plugins:\n");
     test_plugin_is_builtin();
