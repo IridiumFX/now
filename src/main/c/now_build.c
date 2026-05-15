@@ -2812,7 +2812,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     now_module_scan_free(&modscan);
     if (has_remote) now_remote_config_free(&remote_cfg);
 
-    if (ctx->verbose && !now_tui_global && (compiled > 0 || skipped > 0 || cache_hits > 0 || remote_hits > 0)) {
+    if (!now_tui_global && (compiled > 0 || skipped > 0 || cache_hits > 0 || remote_hits > 0)) {
         int total_cached = cache_hits + remote_hits;
         if (total_cached > 0 && compiled > 0 && max_jobs > 1) {
             if (remote_hits > 0)
@@ -2968,8 +2968,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
                     strcmp(cur_lfh, manifest.link_flags_hash) == 0) {
                     free(cur_lfh);
                     now_manifest_free(&manifest);
-                    if (ctx->verbose)
-                        fprintf(stderr, "  link: up to date\n");
+                    fprintf(stderr, "  up to date: %s\n", out_file);
                     if (result) { result->code = NOW_OK; result->message[0] = '\0'; }
                     return 0;
                 }
@@ -3256,6 +3255,8 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             free(bin_dir_for_stage);
         }
     }
+
+    fprintf(stderr, "  linked %s\n", out_file);
 
     if (result) {
         result->code = NOW_OK;
