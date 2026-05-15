@@ -65,6 +65,17 @@ typedef struct {
     int               verbose;
     int               jobs;        /* max parallel jobs (0 = auto) */
     int               timing;      /* --timing: emit per-phase wall-clock */
+    /* Set by compile phase at exit: count of TUs actually recompiled
+     * (not skipped via cache/manifest). The link phase uses this for
+     * a no-op fast-path: zero recompiles → link is necessarily up to
+     * date if the link_flags_hash matches, without statting every
+     * input object. */
+    int               last_compile_count;
+    /* Set by compile to the link_flags_hash it loaded from the
+     * manifest, or NULL if no manifest existed. Lets the link phase
+     * skip a redundant manifest load. Owned by compile; lives until
+     * now_build_free. */
+    char             *last_link_flags_hash;
 } NowBuildCtx;
 
 /* Initialize the build context and discover sources.
