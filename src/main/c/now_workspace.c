@@ -81,6 +81,18 @@ static int find_sibling(NowWorkspace *ws, const char *dep_id) {
     return find_module(ws, artifact);
 }
 
+/* Append-if-absent helper — dedups while preserving insertion order.
+ * Transitive propagation can otherwise produce N² duplicates as each
+ * level of the DAG inherits the prior level's full link.libs, which
+ * blew past a fixed-size buffer cap in the link loop and silently
+ * dropped legitimate entries near the tail (starletc FINDING-E). */
+static void push_unique(NowStrArray *a, const char *s) {
+    if (!s) return;
+    for (size_t i = 0; i < a->count; i++)
+        if (strcmp(a->items[i], s) == 0) return;
+    now_strarray_push(a, s);
+}
+
 /* For each workspace-sibling dep declared in `consumer`'s deps:,
  * inject the producer's public artifacts so the consumer compiles
  * and links without re-declaring them:
@@ -90,7 +102,8 @@ static int find_sibling(NowWorkspace *ws, const char *dep_id) {
  *   compile.defines   += <UPPER>_STATIC      (only if sibling is static)
  *
  * Header-only siblings get only the include path; executable
- * siblings are skipped (not linkable). */
+ * siblings are skipped (not linkable). Pushes are deduped — the
+ * same lib never appears twice in the consumer's array. */
 static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
     NowModule *consumer = &ws->modules[consumer_idx];
     NowProject *cp = consumer->project;
@@ -113,23 +126,24 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
 
         char path[1024];
         snprintf(path, sizeof(path), "%s/src/main/h", sdir);
-        now_strarray_push(&cp->compile.includes, path);
+        push_unique(&cp->compile.includes, path);
 
         int is_header_only = otype && strcmp(otype, "header-only") == 0;
         if (!is_header_only) {
             snprintf(path, sizeof(path), "%s/target/bin", sdir);
-            now_strarray_push(&cp->link.libdirs, path);
+            push_unique(&cp->link.libdirs, path);
 
             const char *lib = sp->output.name ? sp->output.name : sp->artifact;
-            if (lib) now_strarray_push(&cp->link.libs, lib);
+            if (lib) push_unique(&cp->link.libs, lib);
 
             /* Transitive system/external link.libs (e.g. apennines's
              * ws2_32/bcrypt/winmm). Static-linking a sibling drags
              * everything the sibling references, so those have to
              * appear on the consumer's link line too. Already-OS-
-             * filtered by the pom loader's OS-block pass. */
+             * filtered by the pom loader's OS-block pass. Deduped to
+             * avoid N² growth as the DAG accumulates levels. */
             for (size_t k = 0; k < sp->link.libs.count; k++)
-                now_strarray_push(&cp->link.libs, sp->link.libs.items[k]);
+                push_unique(&cp->link.libs, sp->link.libs.items[k]);
         }
 
         if (otype && strcmp(otype, "static") == 0) {
@@ -138,7 +152,7 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
             if (m) {
                 char def[256];
                 snprintf(def, sizeof(def), "%s_STATIC", m);
-                now_strarray_push(&cp->compile.defines, def);
+                push_unique(&cp->compile.defines, def);
                 free(m);
             }
         }
