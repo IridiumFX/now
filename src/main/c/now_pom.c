@@ -657,8 +657,13 @@ NOW_API NowProject *now_project_load(const char *path, NowResult *result) {
     load_compile(&p->compile, pasta_map_get(root, "compile"));
     load_link(&p->link,       pasta_map_get(root, "link"));
 
-    /* Dependencies (§1.6) */
-    load_deps(&p->deps, pasta_map_get(root, "deps"));
+    /* Dependencies (§1.6). Accept `depends:` as a Maven-friendly
+     * alias for `deps:` — `deps:` wins when both are present. */
+    {
+        const PastaValue *dv = pasta_map_get(root, "deps");
+        if (!dv) dv = pasta_map_get(root, "depends");
+        load_deps(&p->deps, dv);
+    }
 
     /* Repositories (§1.7) */
     load_repos(&p->repos, pasta_map_get(root, "repos"));
@@ -752,7 +757,11 @@ NOW_API NowProject *now_project_load_string(const char *input, size_t len,
     load_output(&p->output, pasta_map_get(root, "output"));
     load_compile(&p->compile, pasta_map_get(root, "compile"));
     load_link(&p->link,       pasta_map_get(root, "link"));
-    load_deps(&p->deps, pasta_map_get(root, "deps"));
+    {
+        const PastaValue *dv = pasta_map_get(root, "deps");
+        if (!dv) dv = pasta_map_get(root, "depends");
+        load_deps(&p->deps, dv);
+    }
     load_repos(&p->repos, pasta_map_get(root, "repos"));
     p->convergence = dup_map_str(root, "convergence");
     load_plugins(&p->plugins, pasta_map_get(root, "plugins"));

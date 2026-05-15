@@ -36,6 +36,14 @@ NOW_API char *now_path_join(const char *a, const char *b) {
     if (!a || !*a) return b ? strdup(b) : NULL;
     if (!b || !*b) return strdup(a);
 
+    /* If b is already absolute, return it unchanged — don't double-prefix
+     * with a. Handles POSIX leading-slash and Windows drive-letter forms
+     * ("C:\..." or "C:/..."). */
+    int b_abs = (b[0] == '/' || b[0] == '\\' ||
+                 (((b[0] >= 'A' && b[0] <= 'Z') ||
+                   (b[0] >= 'a' && b[0] <= 'z')) && b[1] == ':'));
+    if (b_abs) return strdup(b);
+
     size_t la = strlen(a);
     size_t lb = strlen(b);
 

@@ -2901,11 +2901,10 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
     int is_shared  = (strcmp(out_type, "shared") == 0);
 
     if (is_static) {
-#ifdef _WIN32
-        snprintf(out_file, sizeof(out_file), "%s/%s.lib", bin_dir, out_name);
-#else
-        snprintf(out_file, sizeof(out_file), "%s/lib%s.a", bin_dir, out_name);
-#endif
+        if (ctx->toolchain.is_msvc)
+            snprintf(out_file, sizeof(out_file), "%s/%s.lib", bin_dir, out_name);
+        else
+            snprintf(out_file, sizeof(out_file), "%s/lib%s.a", bin_dir, out_name);
     } else if (is_shared) {
 #ifdef _WIN32
         snprintf(out_file, sizeof(out_file), "%s/%s.dll", bin_dir, out_name);
@@ -3145,6 +3144,17 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             /* Libraries: -l prepended */
             char *lib_bufs[64];
             size_t nlib = 0;
+            /* GNU ld is single-pass: if A depends on B, A must be -l'd
+             * before B on the command line. Workspace dep order doesn't
+             * always reflect that, so wrap libs in --start-group/--end-group
+             * which makes ld re-scan archives until all refs resolve.
+             * Skipped on Apple ld64 (uses different semantics) and MSVC
+             * link.exe (multi-pass natively). */
+            int use_group = (p->link.libs.count > 1);
+#ifdef __APPLE__
+            use_group = 0;
+#endif
+            if (use_group) argv[argc++] = "-Wl,--start-group";
             for (size_t i = 0; i < p->link.libs.count && nlib < 64; i++) {
                 size_t len = strlen(p->link.libs.items[i]) + 3;
                 lib_bufs[nlib] = malloc(len);
@@ -3154,6 +3164,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
                     nlib++;
                 }
             }
+            if (use_group) argv[argc++] = "-Wl,--end-group";
 
             /* Rust stdlib deps (auto-injected when Rust sources present) */
             if (ctx->toolchain.rustc) {

@@ -101,6 +101,9 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
         int sib = find_sibling(ws, dep_id);
         if (sib < 0 || sib == consumer_idx) continue;
 
+        /* Mark so procure's parallel injector skips this dep. */
+        cp->deps.items[d].is_workspace_local = 1;
+
         NowProject *sp = ws->modules[sib].project;
         const char *sdir = ws->modules[sib].dir;
         if (!sp || !sdir) continue;
@@ -119,6 +122,14 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
 
             const char *lib = sp->output.name ? sp->output.name : sp->artifact;
             if (lib) now_strarray_push(&cp->link.libs, lib);
+
+            /* Transitive system/external link.libs (e.g. apennines's
+             * ws2_32/bcrypt/winmm). Static-linking a sibling drags
+             * everything the sibling references, so those have to
+             * appear on the consumer's link line too. Already-OS-
+             * filtered by the pom loader's OS-block pass. */
+            for (size_t k = 0; k < sp->link.libs.count; k++)
+                now_strarray_push(&cp->link.libs, sp->link.libs.items[k]);
         }
 
         if (otype && strcmp(otype, "static") == 0) {

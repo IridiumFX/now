@@ -79,6 +79,10 @@ typedef struct {
     int   optional;
     int   is_volatile;
     int   override;
+    int   is_workspace_local;  /* set by workspace_init when this dep
+                                 * resolves to a sibling module; tells
+                                 * procure to skip its parallel inject
+                                 * path so we don't double-add -l flags. */
     NowStrArray exclude;
 } NowDep;
 

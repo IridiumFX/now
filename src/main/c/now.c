@@ -133,10 +133,13 @@ static int procure_and_inject_deps(const NowProject *project,
     free(dot_now);
     if (!repo_root) return 0;
 
-    /* For each dep, add include and lib paths from local repo */
+    /* For each dep, add include and lib paths from local repo.
+     * Skip deps already wired by workspace_init (sibling modules) so
+     * we don't double-add -l flags with stale artifact names. */
     for (size_t i = 0; i < project->deps.count; i++) {
         const char *dep_id = project->deps.items[i].id;
         if (!dep_id) continue;
+        if (project->deps.items[i].is_workspace_local) continue;
 
         NowCoordinate coord;
         if (now_coord_parse(dep_id, &coord) != 0) continue;
