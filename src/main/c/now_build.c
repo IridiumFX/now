@@ -3233,6 +3233,26 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 
 /* ---- Test phase (§9) ---- */
 
+/* For executable projects, the production `main.c` translation unit has
+ * its own main() that collides with each test source's main() at link
+ * time. Filter out the entry-point object from the test link by basename
+ * match. Library scaffolds (static/shared/header-only) have no main() in
+ * production objects, so the filter is a no-op there. */
+static int is_entry_point_obj(const char *path) {
+    const char *base = strrchr(path, '/');
+    const char *bb   = strrchr(path, '\\');
+    if (bb && (!base || bb > base)) base = bb;
+    base = base ? base + 1 : path;
+    return strcmp(base, "main.c.o")    == 0 ||
+           strcmp(base, "main.cpp.o")  == 0 ||
+           strcmp(base, "main.cc.o")   == 0 ||
+           strcmp(base, "main.cxx.o")  == 0 ||
+           strcmp(base, "main.c.obj")  == 0 ||
+           strcmp(base, "main.cpp.obj")== 0 ||
+           strcmp(base, "main.cc.obj") == 0 ||
+           strcmp(base, "main.cxx.obj")== 0;
+}
+
 NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
     const NowProject *p = ctx->project;
     const char *basedir = ctx->basedir;
@@ -3559,8 +3579,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                     snprintf(out_buf, sizeof(out_buf), "/OUT:%s", tbin);
                     largv[largc++] = out_buf;
                     largv[largc++] = test_objects.paths[t];
-                    for (size_t i = 0; i < ctx->objects.count; i++)
+                    for (size_t i = 0; i < ctx->objects.count; i++) {
+                        if (is_entry_point_obj(ctx->objects.paths[i])) continue;
                         largv[largc++] = ctx->objects.paths[i];
+                    }
                     /* link.libdirs → /LIBPATH: */
                     for (size_t i = 0; i < p->link.libdirs.count && nl < 64; i++) {
                         char *full = now_path_join(basedir, p->link.libdirs.items[i]);
@@ -3593,8 +3615,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 } else {
                     largv[largc++] = has_cxx ? ctx->toolchain.cxx : ctx->toolchain.cc;
                     largv[largc++] = test_objects.paths[t];
-                    for (size_t i = 0; i < ctx->objects.count; i++)
+                    for (size_t i = 0; i < ctx->objects.count; i++) {
+                        if (is_entry_point_obj(ctx->objects.paths[i])) continue;
                         largv[largc++] = ctx->objects.paths[i];
+                    }
                     /* link.libdirs → -L */
                     for (size_t i = 0; i < p->link.libdirs.count && nl < 64; i++) {
                         char *full = now_path_join(basedir, p->link.libdirs.items[i]);
@@ -3705,8 +3729,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
         for (size_t i = 0; i < test_objects.count; i++)
             argv[argc++] = test_objects.paths[i];
-        for (size_t i = 0; i < ctx->objects.count; i++)
+        for (size_t i = 0; i < ctx->objects.count; i++) {
+            if (is_entry_point_obj(ctx->objects.paths[i])) continue;
             argv[argc++] = ctx->objects.paths[i];
+        }
 
         for (size_t i = 0; i < p->link.libdirs.count && nlib < 64; i++) {
             char *full = now_path_join(basedir, p->link.libdirs.items[i]);
@@ -3746,8 +3772,10 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
         for (size_t i = 0; i < test_objects.count; i++)
             argv[argc++] = test_objects.paths[i];
-        for (size_t i = 0; i < ctx->objects.count; i++)
+        for (size_t i = 0; i < ctx->objects.count; i++) {
+            if (is_entry_point_obj(ctx->objects.paths[i])) continue;
             argv[argc++] = ctx->objects.paths[i];
+        }
 
         for (size_t i = 0; i < p->link.libdirs.count && nlib < 64; i++) {
             char *full = now_path_join(basedir, p->link.libdirs.items[i]);
