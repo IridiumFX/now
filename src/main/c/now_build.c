@@ -2360,6 +2360,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     NowManifest manifest;
     char *manifest_path = now_path_join(ctx->basedir, "target/.now-manifest");
     now_manifest_load(&manifest, manifest_path);
+    if (g_timing_on) now_timing_mark("  .manifest_load");
 
     /* Hash memoization cache — avoids re-hashing same headers across source files */
     NowHashMemo hash_memo;
@@ -2368,6 +2369,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
     /* Compute flags hash once for all sources */
     char *fhash = compile_flags_hash(p);
+    if (g_timing_on) now_timing_mark("  .flags_hash");
 
     /* Determine job count */
     int max_jobs = ctx->jobs > 0 ? ctx->jobs : now_cpu_count();
@@ -2375,19 +2377,46 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
     if (max_jobs > 64) max_jobs = 64;
 
     /* Prefill hash memo in parallel — amortizes SHA-256 across cores so the
-     * per-source cache-probe loop becomes pure memo lookup. */
+     * per-source cache-probe loop becomes pure memo lookup. Skip sources
+     * whose mtime matches the manifest entry: those will short-circuit the
+     * needs_rebuild check before hashing anyway, so prefilling them is
+     * pure waste. Net effect: no-op rebuilds do zero hashing here.
+     *
+     * For incremental, only the actually-changed sources hit the parallel
+     * SHA-256 pipeline. For cold builds (empty manifest), everything is a
+     * candidate — original behaviour. */
     if (ctx->sources.count > 1) {
         char **full_paths = (char **)calloc(ctx->sources.count, sizeof(char *));
+        size_t ncand = 0;
         if (full_paths) {
-            for (size_t i = 0; i < ctx->sources.count; i++)
-                full_paths[i] = now_path_join(ctx->basedir, ctx->sources.paths[i]);
-            now_hash_memo_prefill(&hash_memo,
-                                   (const char *const *)full_paths,
-                                   ctx->sources.count, max_jobs);
-            for (size_t i = 0; i < ctx->sources.count; i++) free(full_paths[i]);
+            for (size_t i = 0; i < ctx->sources.count; i++) {
+                const char *src = ctx->sources.paths[i];
+                char *full = now_path_join(ctx->basedir, src);
+                if (!full) continue;
+
+                /* Cheap mtime gate: if the manifest already knows this
+                 * source AND mtime matches, the needs_rebuild check will
+                 * skip hashing — so we skip prefilling too. */
+                const NowManifestEntry *entry = now_manifest_find(&manifest, src);
+                if (entry) {
+                    long long cur_mtime = 0;
+                    if (now_stat_cached(&ctx->stat_cache, full, &cur_mtime) &&
+                        cur_mtime == entry->mtime) {
+                        free(full);
+                        continue;
+                    }
+                }
+                full_paths[ncand++] = full;
+            }
+            if (ncand > 0)
+                now_hash_memo_prefill(&hash_memo,
+                                       (const char *const *)full_paths,
+                                       ncand, max_jobs);
+            for (size_t i = 0; i < ncand; i++) free(full_paths[i]);
             free(full_paths);
         }
     }
+    if (g_timing_on) now_timing_mark("  .prefill");
 
     /* Phase 1: Classify sources, check manifest, build job list */
     size_t njobs = 0;
@@ -2617,6 +2646,8 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         else
             errors++;
     }
+
+    if (g_timing_on) now_timing_mark("  .classify+manifest_check");
 
     /* Phase 2: Execute jobs in parallel */
     int compiled = 0;
@@ -2877,15 +2908,26 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
         compile_job_free(&jobs[j]);
     free(jobs);
 
-    /* Save manifest (include link flags hash for link-skip optimization) */
+    if (g_timing_on) now_timing_mark("  .pool+jobs");
+
+    /* Save manifest only when its content changed. On a no-op rebuild
+     * (compiled=0 AND link_flags_hash unchanged), the on-disk manifest
+     * is already correct; rewriting it via pasta serialization is a
+     * 600ms tax for nothing. */
     if (manifest_path) {
         char *lfh = link_flags_hash(ctx->project);
-        if (lfh) {
+        int lfh_changed = (lfh && (!manifest.link_flags_hash ||
+                                    strcmp(lfh, manifest.link_flags_hash) != 0));
+        if (lfh_changed) {
             free(manifest.link_flags_hash);
             manifest.link_flags_hash = lfh;
+        } else {
+            free(lfh);
         }
-        now_manifest_save(&manifest, manifest_path);
+        if (compiled > 0 || lfh_changed)
+            now_manifest_save(&manifest, manifest_path);
     }
+    if (g_timing_on) now_timing_mark("  .manifest_save");
 
     /* Save dirwalk cache — any new entries discovered during this build */
     if (now_dirwalk_cache_global) {
