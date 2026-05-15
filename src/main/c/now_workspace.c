@@ -144,6 +144,14 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
              * avoid N² growth as the DAG accumulates levels. */
             for (size_t k = 0; k < sp->link.libs.count; k++)
                 push_unique(&cp->link.libs, sp->link.libs.items[k]);
+
+            /* Transitive libdirs too — consumers two hops down the DAG
+             * need every intermediate sibling's target/bin on the link
+             * line, otherwise `-l<transitive>` resolves against nothing.
+             * starletc workaround #2 (each host re-listing 27 transitive
+             * sibling depends just for the libdir side-effect). */
+            for (size_t k = 0; k < sp->link.libdirs.count; k++)
+                push_unique(&cp->link.libdirs, sp->link.libdirs.items[k]);
         }
 
         if (otype && strcmp(otype, "static") == 0) {
@@ -248,9 +256,16 @@ NOW_API int now_workspace_init(NowWorkspace *ws, NowProject *root,
     /* Auto-propagate each sibling's public artifacts (include dir,
      * libdir, lib name, and <UPPER>_STATIC define for static libs)
      * into every dependent consumer. Mirrors Maven `compile`-scope
-     * transitive includes without per-consumer re-declaration. */
-    for (size_t i = 0; i < nmod; i++)
-        inject_sibling_artifacts(ws, (int)i);
+     * transitive includes without per-consumer re-declaration.
+     *
+     * Multi-pass: a topologically-ordered workspace converges in one
+     * pass, but workspace authors can declare modules in any order.
+     * For an N-level DAG, N passes are sufficient for transitive
+     * propagation to reach the deepest consumer. Pushes are deduped
+     * by push_unique() so extra passes are safe (just no-ops). */
+    for (size_t pass = 0; pass < nmod; pass++)
+        for (size_t i = 0; i < nmod; i++)
+            inject_sibling_artifacts(ws, (int)i);
 
     if (result) {
         result->code = NOW_OK;

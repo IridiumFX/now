@@ -525,29 +525,49 @@ static int has_java_lang(const NowProject *p) {
  * Windows test binaries find their shared deps via the loader's first
  * search path (the binary's own directory). No-op on POSIX, where
  * RPATH baked into the binary at link time does the same job. */
+#ifdef _WIN32
+static void stage_dlls_from_dir(const char *dir, const char *dest_dir) {
+    if (!dir || !dest_dir) return;
+    char *pattern = now_path_join(dir, "*.dll");
+    if (!pattern) return;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    free(pattern);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        char *src = now_path_join(dir, fd.cFileName);
+        char *dst = now_path_join(dest_dir, fd.cFileName);
+        if (src && dst) (void)now_file_copy(src, dst);
+        free(src);
+        free(dst);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+#endif
+
+/* Copy *.dll from every libdir we know about into dest_dir. Sources:
+ *   - ctx->dep_lib_dirs_raw — procured deps (registry / local repo)
+ *   - ctx->project->link.libdirs — workspace siblings (auto-injected)
+ *     and user-declared paths.
+ *
+ * Lets a built executable run from its target/bin/ without LD_LIBRARY_PATH
+ * gymnastics or post-build cp dances (starletc workaround #1). Windows
+ * only — POSIX uses -Wl,-rpath at link time, baked into the binary. */
 static void stage_dep_dlls(const NowBuildCtx *ctx, const char *dest_dir) {
 #ifdef _WIN32
     if (!ctx || !dest_dir) return;
-    for (size_t i = 0; i < ctx->dep_lib_dirs_raw.count; i++) {
-        const char *dir = ctx->dep_lib_dirs_raw.paths[i];
-        if (!dir) continue;
+    for (size_t i = 0; i < ctx->dep_lib_dirs_raw.count; i++)
+        stage_dlls_from_dir(ctx->dep_lib_dirs_raw.paths[i], dest_dir);
 
-        char *pattern = now_path_join(dir, "*.dll");
-        if (!pattern) continue;
-
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        free(pattern);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do {
-            if (fd.cFileName[0] == '.') continue;
-            char *src = now_path_join(dir, fd.cFileName);
-            char *dst = now_path_join(dest_dir, fd.cFileName);
-            if (src && dst) (void)now_file_copy(src, dst);
-            free(src);
-            free(dst);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
+    if (ctx->project && ctx->basedir) {
+        for (size_t i = 0; i < ctx->project->link.libdirs.count; i++) {
+            char *abs = now_path_join(ctx->basedir,
+                                       ctx->project->link.libdirs.items[i]);
+            if (!abs) continue;
+            stage_dlls_from_dir(abs, dest_dir);
+            free(abs);
+        }
     }
 #else
     (void)ctx; (void)dest_dir;
@@ -3222,6 +3242,19 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
         }
         now_repro_free_flags(link_repro_flags, link_repro_nflags);
         now_repro_free(&link_repro);
+    }
+
+    /* For executables, stage any shared-lib siblings (or procured
+     * shared deps) next to the .exe so it runs without LD_LIBRARY_PATH
+     * gymnastics — most visible on Windows where basta.dll, apennines.dll
+     * etc. need to sit alongside the consumer .exe. POSIX bakes the path
+     * via -Wl,-rpath at link time, so this is a no-op there. */
+    if (!is_static && !is_shared) {
+        char *bin_dir_for_stage = now_path_join(basedir, "target/bin");
+        if (bin_dir_for_stage) {
+            stage_dep_dlls(ctx, bin_dir_for_stage);
+            free(bin_dir_for_stage);
+        }
     }
 
     if (result) {
