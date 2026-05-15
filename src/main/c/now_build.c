@@ -3037,7 +3037,9 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
         /* ---- MSVC link path ---- */
         if (is_static) {
             /* Static library: lib.exe /OUT:file obj... */
-            const char *argv[256];
+            size_t need = ctx->objects.count + 8;
+            const char **argv = (const char **)malloc(need * sizeof(char *));
+            if (!argv) return -1;
             int argc = 0;
             argv[argc++] = ctx->toolchain.ar;  /* lib.exe */
             argv[argc++] = "/nologo";
@@ -3049,6 +3051,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             argv[argc] = NULL;
 
             int rc = now_exec(argv, ctx->verbose);
+            free(argv);
             if (rc != 0) {
                 if (result) {
                     result->code = NOW_ERR_TOOL;
@@ -3059,7 +3062,11 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             }
         } else {
             /* Executable or DLL: link.exe /OUT:file obj... libs... */
-            const char *argv[512];
+            size_t need = ctx->objects.count + p->link.flags.count
+                        + p->link.libdirs.count + ctx->dep_libdirs.count
+                        + p->link.libs.count + ctx->dep_libs.count + 16;
+            const char **argv = (const char **)malloc(need * sizeof(char *));
+            if (!argv) return -1;
             int argc = 0;
             argv[argc++] = "link.exe";
             argv[argc++] = "/nologo";
@@ -3123,6 +3130,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 
             for (size_t i = 0; i < nlibdir; i++) free(libdir_bufs[i]);
             for (size_t i = 0; i < nlib; i++)    free(lib_bufs[i]);
+            free(argv);
 
             if (rc != 0) {
                 if (result) {
@@ -3149,7 +3157,9 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 
         if (is_static) {
             /* Static library: ar rcs */
-            const char *argv[256];
+            size_t need = ctx->objects.count + 8;
+            const char **argv = (const char **)malloc(need * sizeof(char *));
+            if (!argv) return -1;
             int argc = 0;
             argv[argc++] = ctx->toolchain.ar;
             argv[argc++] = "rcs";
@@ -3159,6 +3169,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
             argv[argc] = NULL;
 
             int rc = now_exec(argv, ctx->verbose);
+            free(argv);
             if (rc != 0) {
                 if (result) {
                     result->code = NOW_ERR_TOOL;
@@ -3174,7 +3185,17 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
                 if (strcmp(p->langs.items[i], "c++") == 0) { has_cxx = 1; break; }
             }
 
-            const char *argv[512];
+            size_t need = ctx->objects.count + p->link.flags.count
+                        + p->link.libdirs.count + ctx->dep_libdirs.count
+                        + p->link.archives.count
+                        + p->link.libs.count + ctx->dep_libs.count
+                        + link_repro_nflags + 24;
+            const char **argv = (const char **)malloc(need * sizeof(char *));
+            if (!argv) {
+                now_repro_free_flags(link_repro_flags, link_repro_nflags);
+                now_repro_free(&link_repro);
+                return -1;
+            }
             int argc = 0;
             argv[argc++] = has_cxx ? ctx->toolchain.cxx : ctx->toolchain.cc;
 
@@ -3282,6 +3303,7 @@ NOW_API int now_build_link(NowBuildCtx *ctx, NowResult *result) {
 
             for (size_t i = 0; i < nlibdir; i++) free(libdir_bufs[i]);
             for (size_t i = 0; i < nlib; i++)    free(lib_bufs[i]);
+            free(argv);
 
             if (rc != 0) {
                 if (result) {
