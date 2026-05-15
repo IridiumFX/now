@@ -35,6 +35,16 @@ NOW_API void now_toolchain_free(NowToolchain *tc);
  * Returns at least 1 even if detection fails. */
 NOW_API int now_cpu_count(void);
 
+/* Per-phase wall-clock instrumentation. Toggled by --timing on the CLI;
+ * silent when disabled. now_timing_mark() prints the elapsed seconds
+ * since the previous mark (or since now_timing_begin()) prefixed with
+ * the given label, and resets the running anchor. */
+NOW_API void   now_timing_set(int enabled);
+NOW_API int    now_timing_enabled(void);
+NOW_API double now_clock_secs(void);
+NOW_API void   now_timing_begin(void);
+NOW_API void   now_timing_mark(const char *label);
+
 /* Build context — everything needed for a build */
 typedef struct {
     const NowProject *project;
@@ -54,6 +64,7 @@ typedef struct {
     NowStatCache      stat_cache;  /* memoize header-dep stat() per build */
     int               verbose;
     int               jobs;        /* max parallel jobs (0 = auto) */
+    int               timing;      /* --timing: emit per-phase wall-clock */
 } NowBuildCtx;
 
 /* Initialize the build context and discover sources.

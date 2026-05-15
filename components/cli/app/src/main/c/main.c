@@ -212,6 +212,7 @@ static void usage(void) {
         "  --offline       No network access\n"
         "  --target TRIPLE Target platform triple (os:arch:variant)\n"
         "  --tui           Live progress display\n"
+        "  --timing        Print wall-clock per build phase\n"
         "  --no-color      Disable ANSI colors\n"
         "  -h              Show this help\n",
         now_version());
@@ -267,6 +268,8 @@ int main(int argc, char *argv[]) {
             flag_no_color = 1;
         else if (strcmp(argv[i], "--tui") == 0)
             flag_tui = 1;
+        else if (strcmp(argv[i], "--timing") == 0)
+            now_timing_set(1);
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
             target_str = argv[++i];
         else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {

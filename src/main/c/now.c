@@ -301,25 +301,31 @@ static int run_generate_phase(const NowProject *project,
 
 NOW_API int now_build(const NowProject *project, const char *basedir,
                       int verbose, int jobs, NowResult *result) {
+    now_timing_begin();
     NowBuildCtx ctx;
     int rc = now_build_init(&ctx, project, basedir, result);
     if (rc != 0) return rc;
     ctx.verbose = verbose;
     ctx.jobs = jobs;
+    now_timing_mark("build_init (sources)");
 
     /* Procure deps before compile */
     rc = procure_and_inject_deps(project, &ctx, result);
     if (rc != 0) { now_build_free(&ctx); return rc; }
+    now_timing_mark("procure");
 
     /* Generate phase: run plugins, inject sources/includes/defines */
     rc = run_generate_phase(project, basedir, &ctx, verbose, result);
     if (rc != 0) { now_build_free(&ctx); return rc; }
+    now_timing_mark("generate");
 
     rc = now_build_compile(&ctx, result);
     if (rc != 0) { now_build_free(&ctx); return rc; }
+    now_timing_mark("compile");
 
     if (now_tui_global) now_tui_link(now_tui_global);
     rc = now_build_link(&ctx, result);
+    now_timing_mark("link");
     now_build_free(&ctx);
     return rc;
 }

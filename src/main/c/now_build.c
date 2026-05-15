@@ -34,6 +34,7 @@
   #include <unistd.h>
   #include <dirent.h>
   #include <pthread.h>
+  #include <time.h>
   #ifdef __APPLE__
     #include <sys/sysctl.h>
   #endif
@@ -57,6 +58,44 @@ NOW_API int now_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
 #endif
+}
+
+/* ---- Phase timing (--timing flag) ---- */
+
+static int    g_timing_on = 0;
+static double g_timing_anchor = 0.0;
+static double g_timing_total_start = 0.0;
+
+NOW_API double now_clock_secs(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+#endif
+}
+
+NOW_API void now_timing_set(int enabled) { g_timing_on = enabled; }
+NOW_API int  now_timing_enabled(void)    { return g_timing_on; }
+
+NOW_API void now_timing_begin(void) {
+    if (!g_timing_on) return;
+    g_timing_anchor = now_clock_secs();
+    g_timing_total_start = g_timing_anchor;
+}
+
+NOW_API void now_timing_mark(const char *label) {
+    if (!g_timing_on) return;
+    double now = now_clock_secs();
+    double dt  = now - g_timing_anchor;
+    double tot = now - g_timing_total_start;
+    fprintf(stderr, "[timing] %-22s %7.3fs   (total %6.3fs)\n",
+            label, dt, tot);
+    g_timing_anchor = now;
 }
 
 /* ---- Subprocess execution ---- */
