@@ -385,6 +385,27 @@ static void load_deps(NowDepArray *dst, const PastaValue *arr) {
         if (idx < 0) return;
         NowDep *d = &dst->items[idx];
         d->id          = dup_map_str(elem, "id");
+        /* Accept the Maven-style long form `{group, artifact, version}`
+         * as an alternative to the `id: "g:a:v"` shorthand — synthesize
+         * the id string when the shorthand is absent but the discrete
+         * fields are present. Either form alone is sufficient; if the
+         * caller supplies both, `id:` wins. */
+        if (!d->id) {
+            const PastaValue *pg = pasta_map_get(elem, "group");
+            const PastaValue *pa = pasta_map_get(elem, "artifact");
+            const PastaValue *pv = pasta_map_get(elem, "version");
+            const char *g = (pg && pasta_type(pg) == PASTA_STRING) ? pasta_get_string(pg) : NULL;
+            const char *a = (pa && pasta_type(pa) == PASTA_STRING) ? pasta_get_string(pa) : NULL;
+            const char *v = (pv && pasta_type(pv) == PASTA_STRING) ? pasta_get_string(pv) : NULL;
+            if (g && a) {
+                size_t need = strlen(g) + strlen(a) + (v ? strlen(v) : 1) + 3;
+                char *buf = malloc(need);
+                if (buf) {
+                    snprintf(buf, need, "%s:%s:%s", g, a, v ? v : "*");
+                    d->id = buf;
+                }
+            }
+        }
         d->scope       = dup_map_str(elem, "scope");
         d->optional    = get_map_bool(elem, "optional", 0);
         d->is_volatile = get_map_bool(elem, "volatile", 0);

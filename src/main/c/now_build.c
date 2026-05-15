@@ -3338,6 +3338,28 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         if (last) { *last = '\0'; now_mkdir_p(obj_dir_copy); }
         free(obj_dir_copy);
 
+        /* Skip the compile when the .o exists and is newer than the
+         * source. Production compile uses the full content-addressed
+         * manifest; test compile doesn't have its own manifest layer,
+         * so a plain mtime check is the lightweight equivalent. Without
+         * this every `now test` re-ran gcc per test TU and re-linked
+         * the test exe even on no-op runs (vulpes perf finding). */
+        {
+            struct stat src_st, obj_st;
+            char *src_full_check = now_path_join(basedir, src);
+            if (src_full_check && stat(obj, &obj_st) == 0 &&
+                stat(src_full_check, &src_st) == 0 &&
+                (long long)src_st.st_mtime <= (long long)obj_st.st_mtime) {
+                if (ctx->verbose)
+                    fprintf(stderr, "  test compile: %s (up to date)\n", src);
+                now_filelist_push(&test_objects, obj);
+                free(obj);
+                free(src_full_check);
+                continue;
+            }
+            free(src_full_check);
+        }
+
         /* Build argv — MSVC vs GCC/Clang */
         const char *argv[64];
         int argc = 0;
@@ -3713,6 +3735,35 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 #endif
     free(test_bin_dir);
 
+    /* Skip the test link if test_bin exists and is newer than every
+     * input object. Mirrors the production link's up-to-date check —
+     * vulpes flagged that the test exe was re-linking unconditionally
+     * (~10s of every `now test` no-op at 75 .o files). */
+    {
+        struct stat tb_st;
+        if (stat(test_bin, &tb_st) == 0) {
+            long long tb_mtime = (long long)tb_st.st_mtime;
+            int up_to_date = 1;
+            for (size_t i = 0; up_to_date && i < test_objects.count; i++) {
+                struct stat os;
+                if (stat(test_objects.paths[i], &os) != 0 ||
+                    (long long)os.st_mtime > tb_mtime) up_to_date = 0;
+            }
+            for (size_t i = 0; up_to_date && i < ctx->objects.count; i++) {
+                if (is_entry_point_obj(ctx->objects.paths[i])) continue;
+                struct stat os;
+                if (stat(ctx->objects.paths[i], &os) != 0 ||
+                    (long long)os.st_mtime > tb_mtime) up_to_date = 0;
+            }
+            if (up_to_date) {
+                if (ctx->verbose)
+                    fprintf(stderr, "  test link: up to date\n");
+                now_filelist_free(&test_objects);
+                goto run_test_bin;
+            }
+        }
+    }
+
     const char *argv[512];
     int argc = 0;
     char *lib_bufs[64];
@@ -3823,10 +3874,13 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         return -1;
     }
 
+run_test_bin:
     /* Execute the test binary with CWD = module root so relative fixture
      * paths resolve from the project root (not target/bin/). */
-    const char *test_argv[] = { test_bin, NULL };
-    rc = now_exec_in_dir(test_argv, ctx->verbose, basedir);
+    {
+        const char *test_argv[] = { test_bin, NULL };
+        rc = now_exec_in_dir(test_argv, ctx->verbose, basedir);
+    }
 
     if (rc != 0) {
         if (result) {
