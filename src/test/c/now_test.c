@@ -157,6 +157,40 @@ static void test_pom_compile(void) {
     PASS();
 }
 
+static void test_pom_os_conditional(void) {
+    TEST("pom: OS-conditional sub-blocks merge into parent");
+    /* compile.windows / compile.posix and link.* sub-blocks should
+     * append to the parent arrays only when host OS matches. */
+    const char *input =
+        "{ group: \"x\", artifact: \"x\", version: \"0.1.0\","
+        "  compile: { defines: [\"BASE\"],"
+        "             windows: { defines: [\"IS_WINDOWS\"] },"
+        "             posix:   { defines: [\"IS_POSIX\"] } } }";
+    NowResult res;
+    NowProject *p = now_project_load_string(input, strlen(input), &res);
+    ASSERT_NOT_NULL(p);
+    /* BASE is always present. Exactly one of IS_WINDOWS or IS_POSIX
+     * should be present, depending on host. */
+    size_t n = now_project_define_count(p);
+    int have_base = 0, have_win = 0, have_posix = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *d = now_project_define(p, i);
+        if (strcmp(d, "BASE")       == 0) have_base = 1;
+        if (strcmp(d, "IS_WINDOWS") == 0) have_win = 1;
+        if (strcmp(d, "IS_POSIX")   == 0) have_posix = 1;
+    }
+    ASSERT_EQ(have_base, 1);
+    /* Exactly one OS branch matched. */
+    ASSERT_EQ(have_win + have_posix, 1);
+#ifdef _WIN32
+    ASSERT_EQ(have_win, 1);
+#else
+    ASSERT_EQ(have_posix, 1);
+#endif
+    now_project_free(p);
+    PASS();
+}
+
 static void test_pom_deps(void) {
     TEST("pom: dependency loading");
     const char *input =
@@ -6131,6 +6165,7 @@ int main(void) {
     test_pom_lang_scalar();
     test_pom_lang_mixed();
     test_pom_compile();
+    test_pom_os_conditional();
     test_pom_deps();
     test_pom_convergence();
 

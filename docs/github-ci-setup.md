@@ -237,6 +237,27 @@ All three projects ship with the same three-line workflow.
 
 `now ci` is the right default for GitHub Actions — it emits JSON/Pasta/text formats (`--output <fmt>`) for downstream parsing.
 
+### Platform-conditional flags / libs
+
+For cross-platform projects that need different libs or defines per host OS, nest sub-blocks inside `compile:` / `link:` keyed by OS name:
+
+```pasta
+link: {
+  output: "executable",
+  libs:    ["m"],
+  windows: { libs: ["ole32", "uuid", "shell32", "advapi32"] },
+  posix:   { libs: ["pthread"] },
+  linux:   { libs: ["rt"] }
+}
+
+compile: {
+  warnings: ["Wall", "Wextra"],
+  posix:    { flags: ["-fPIC"] }
+}
+```
+
+Recognized keys: `windows`, `linux`, `macos`, `freebsd`, `openbsd`, `netbsd` (exact host-OS match) and `posix`/`unix` (anything not Windows). Each matching sub-block is **appended** to the parent arrays — non-matching ones are skipped silently. Scalar fields (`std`, `opt`, `script`) are only set by the parent; OS sub-blocks contribute additions, not overrides.
+
 ### Test layouts: one binary vs. one-per-file
 
 `now test` supports two link modes, set in `now.pasta`:

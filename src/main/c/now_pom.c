@@ -5,6 +5,7 @@
  */
 #include "now_pom.h"
 #include "now.h"
+#include "now_arch.h"
 
 #include "pasta.h"
 
@@ -276,24 +277,95 @@ static void load_sources(NowSources *dst, const PastaValue *src) {
     load_kv_strarray(&dst->env,     pasta_map_get(src, "env"),     0);
 }
 
+/* OS-conditional sub-blocks in compile/link/etc.
+ *
+ * Pasta:
+ *   link: {
+ *     libs: ["m"],
+ *     windows: { libs: ["ole32", "uuid", "shell32", "advapi32"] },
+ *     posix:   { libs: ["pthread"] },
+ *     linux:   { libs: ["rt"] }
+ *   }
+ *
+ * Resolution: when loading, each sub-block whose key matches the host's
+ * OS (or a group alias like 'posix'/'unix') is APPENDED into the parent
+ * arrays. Non-matching blocks are ignored.
+ *
+ * Recognized keys:
+ *   windows, linux, macos, freebsd, openbsd, netbsd  (specific OS)
+ *   posix, unix                                       (anything not windows) */
+static int os_block_matches(const char *key) {
+    const NowTriple *host = now_host_triple_parsed();
+    if (!host || !host->os[0]) return 0;
+    const char *hos = host->os;
+    if (strcmp(key, hos) == 0) return 1;
+    if ((strcmp(key, "posix") == 0 || strcmp(key, "unix") == 0)
+        && strcmp(hos, "windows") != 0)
+        return 1;
+    return 0;
+}
+
+static int is_os_block_key(const char *key) {
+    static const char *keys[] = {
+        "windows", "linux", "macos", "freebsd", "openbsd", "netbsd",
+        "posix", "unix", NULL
+    };
+    for (const char **k = keys; *k; k++)
+        if (strcmp(key, *k) == 0) return 1;
+    return 0;
+}
+
+/* Forward decls so the OS-merge helpers can call back into the loaders. */
+static void load_compile(NowCompile *dst, const PastaValue *src);
+static void load_link(NowLink *dst, const PastaValue *src);
+
+/* Walk OS-named sub-blocks; for each one that matches the host, call
+ * `merge` to append its contents into dst. */
+static void apply_os_overrides(void *dst, const PastaValue *src,
+                                void (*merge)(void *, const PastaValue *)) {
+    if (!src || pasta_type(src) != PASTA_MAP) return;
+    size_t n = pasta_count(src);
+    for (size_t i = 0; i < n; i++) {
+        const char *key = pasta_map_key(src, i);
+        const PastaValue *val = pasta_map_value(src, i);
+        if (!key || !val || pasta_type(val) != PASTA_MAP) continue;
+        if (!is_os_block_key(key)) continue;
+        if (!os_block_matches(key))  continue;
+        merge(dst, val);
+    }
+}
+
+/* Type-erased dispatch wrappers for apply_os_overrides. */
+static void merge_compile(void *dst, const PastaValue *src) {
+    load_compile((NowCompile *)dst, src);
+}
+static void merge_link(void *dst, const PastaValue *src) {
+    load_link((NowLink *)dst, src);
+}
+
 static void load_compile(NowCompile *dst, const PastaValue *src) {
     if (!src || pasta_type(src) != PASTA_MAP) return;
     load_strarray(&dst->flags,    pasta_map_get(src, "flags"));
     load_strarray(&dst->warnings, pasta_map_get(src, "warnings"));
     load_strarray(&dst->defines,  pasta_map_get(src, "defines"));
     load_strarray(&dst->includes, pasta_map_get(src, "includes"));
-    dst->std = dup_map_str(src, "std");
-    dst->opt = dup_map_str(src, "opt");
+    /* Scalar fields: only set if not already set (so a parent block's
+     * std doesn't get clobbered when an OS sub-block is merged in). */
+    if (!dst->std) dst->std = dup_map_str(src, "std");
+    if (!dst->opt) dst->opt = dup_map_str(src, "opt");
+    /* Merge in any OS sub-blocks that match the host. */
+    apply_os_overrides(dst, src, merge_compile);
 }
 
 static void load_link(NowLink *dst, const PastaValue *src) {
     if (!src || pasta_type(src) != PASTA_MAP) return;
-    load_strarray(&dst->flags,   pasta_map_get(src, "flags"));
-    load_strarray(&dst->libs,    pasta_map_get(src, "libs"));
-    load_strarray(&dst->libdirs, pasta_map_get(src, "libdirs"));
+    load_strarray(&dst->flags,    pasta_map_get(src, "flags"));
+    load_strarray(&dst->libs,     pasta_map_get(src, "libs"));
+    load_strarray(&dst->libdirs,  pasta_map_get(src, "libdirs"));
     load_strarray(&dst->archives, pasta_map_get(src, "archives"));
-    dst->script      = dup_map_str(src, "script");
-    dst->script_body = dup_map_str(src, "script_body");
+    if (!dst->script)      dst->script      = dup_map_str(src, "script");
+    if (!dst->script_body) dst->script_body = dup_map_str(src, "script_body");
+    apply_os_overrides(dst, src, merge_link);
 }
 
 static void load_output(NowOutput *dst, const PastaValue *src) {
