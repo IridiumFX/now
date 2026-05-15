@@ -51,6 +51,7 @@ typedef struct {
      * RPATH and the loader's search rules check the binary's own
      * directory first. POSIX gets RPATH at link time instead. */
     NowFileList       dep_lib_dirs_raw;
+    NowStatCache      stat_cache;  /* memoize header-dep stat() per build */
     int               verbose;
     int               jobs;        /* max parallel jobs (0 = auto) */
 } NowBuildCtx;

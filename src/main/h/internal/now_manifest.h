@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include "now.h"
+#include "now_fs.h"  /* NowStatCache for needs_rebuild */
 
 /* One entry per source file */
 typedef struct {
@@ -58,11 +59,15 @@ NOW_API char *now_sha256_file(const char *path);
 NOW_API char *now_sha256_string(const char *data, size_t len);
 
 /* Check if a source file needs recompilation against manifest entry.
- * Returns 1 if recompilation is needed, 0 if up-to-date. */
+ * Returns 1 if recompilation is needed, 0 if up-to-date.
+ * `stat_cache` may be NULL — supplying one memoizes header-dep stat()
+ * calls across sources in the same build and is the difference between
+ * a fast and a slow no-op rebuild for large projects. */
 NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
                                         const char *basedir,
                                         const char *source,
-                                        const char *flags_hash);
+                                        const char *flags_hash,
+                                        NowStatCache *stat_cache);
 
 /* Set header dependencies on an existing manifest entry.
  * The deps and hashes arrays are copied. Returns 0 on success. */

@@ -6184,7 +6184,7 @@ static void test_manifest_needs_rebuild_dep_changed(void) {
 
     /* Should be up to date */
     const NowManifestEntry *e = now_manifest_find(&m, "_test_dep_src.c");
-    int rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash");
+    int rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash", NULL);
     ASSERT_EQ(rebuild, 0);
 
     /* Modify header */
@@ -6192,7 +6192,7 @@ static void test_manifest_needs_rebuild_dep_changed(void) {
     if (f) { fprintf(f, "modified\n"); fclose(f); }
 
     /* Now should need rebuild */
-    rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash");
+    rebuild = now_manifest_needs_rebuild(e, "target", "_test_dep_src.c", "fhash", NULL);
     ASSERT_EQ(rebuild, 1);
 
     now_manifest_free(&m);

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <limits.h>
 #include <sys/stat.h>
 
@@ -410,4 +411,106 @@ NOW_API int now_file_copy(const char *src, const char *dst) {
     fclose(out);
     fclose(in);
     return err;
+}
+
+/* ---- Per-build stat() memoization (open-addressed hash table) ---- */
+
+NOW_API void now_stat_cache_init(NowStatCache *c) {
+    c->table = NULL;
+    c->capacity = 0;
+    c->count = 0;
+}
+
+NOW_API void now_stat_cache_free(NowStatCache *c) {
+    if (!c) return;
+    for (size_t i = 0; i < c->capacity; i++)
+        free(c->table[i].path);
+    free(c->table);
+    c->table = NULL;
+    c->capacity = c->count = 0;
+}
+
+static uint32_t stat_hash_fnv1a(const char *s) {
+    uint32_t h = 0x811c9dc5u;
+    while (*s) {
+        h ^= (uint8_t)*s++;
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
+/* Find the slot for `path` — either holding it, or the first empty
+ * slot in its probe chain. Caller checks slot->path to distinguish. */
+static NowStatEntry *stat_probe(NowStatEntry *table, size_t mask,
+                                  const char *path, uint32_t hash) {
+    size_t i = hash & mask;
+    for (;;) {
+        NowStatEntry *e = &table[i];
+        if (!e->path || strcmp(e->path, path) == 0) return e;
+        i = (i + 1) & mask;
+    }
+}
+
+static int stat_grow(NowStatCache *c) {
+    size_t old_cap = c->capacity;
+    size_t new_cap = old_cap ? old_cap * 2 : 64;
+    NowStatEntry *new_table = calloc(new_cap, sizeof(NowStatEntry));
+    if (!new_table) return -1;
+    size_t mask = new_cap - 1;
+    for (size_t i = 0; i < old_cap; i++) {
+        NowStatEntry *src = &c->table[i];
+        if (!src->path) continue;
+        NowStatEntry *dst = stat_probe(new_table, mask, src->path,
+                                         stat_hash_fnv1a(src->path));
+        *dst = *src;
+    }
+    free(c->table);
+    c->table = new_table;
+    c->capacity = new_cap;
+    return 0;
+}
+
+NOW_API int now_stat_cached(NowStatCache *cache, const char *path,
+                             long long *mtime_out) {
+    if (!path) return 0;
+
+    /* No cache → direct stat */
+    if (!cache) {
+        struct stat st;
+        if (stat(path, &st) != 0) return 0;
+        if (mtime_out) *mtime_out = (long long)st.st_mtime;
+        return 1;
+    }
+
+    /* Grow when load factor > 0.7 (count + 1 > cap * 7 / 10) */
+    if ((cache->count + 1) * 10 > cache->capacity * 7) {
+        if (stat_grow(cache) != 0) {
+            /* OOM — fall back to uncached stat */
+            struct stat st;
+            if (stat(path, &st) != 0) return 0;
+            if (mtime_out) *mtime_out = (long long)st.st_mtime;
+            return 1;
+        }
+    }
+
+    uint32_t h = stat_hash_fnv1a(path);
+    size_t mask = cache->capacity - 1;
+    NowStatEntry *slot = stat_probe(cache->table, mask, path, h);
+    if (slot->path) {
+        /* Hit */
+        if (mtime_out && slot->exists) *mtime_out = slot->mtime;
+        return slot->exists;
+    }
+
+    /* Miss — stat and insert */
+    struct stat st;
+    int exists = (stat(path, &st) == 0);
+    long long mt = exists ? (long long)st.st_mtime : 0;
+    slot->path = strdup(path);
+    slot->exists = exists;
+    slot->mtime = mt;
+    cache->count++;
+
+    if (mtime_out && exists) *mtime_out = mt;
+    return exists;
 }

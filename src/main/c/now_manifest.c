@@ -285,7 +285,8 @@ NOW_API int now_manifest_set_deps(NowManifest *m, const char *source,
 NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
                                 const char *basedir,
                                 const char *source,
-                                const char *flags_hash) {
+                                const char *flags_hash,
+                                NowStatCache *stat_cache) {
     if (!entry) return 1;  /* no previous entry → rebuild */
 
     /* Check flags changed */
@@ -297,10 +298,9 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
     char *full = now_path_join(basedir, source);
     if (!full) return 1;
 
-    struct stat st;
-    if (stat(full, &st) != 0) { free(full); return 1; }
+    long long cur_mtime = 0;
+    if (!now_stat_cached(stat_cache, full, &cur_mtime)) { free(full); return 1; }
 
-    long long cur_mtime = (long long)st.st_mtime;
     if (cur_mtime != entry->mtime) {
         /* mtime differs — hash to confirm */
         char *cur_hash = now_sha256_file(full);
@@ -319,16 +319,19 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
     if (entry->object && !now_path_exists(entry->object))
         return 1;
 
-    /* Check header dependencies — mtime fast path, then hash */
+    /* Check header dependencies — memoized stat fast path, then hash.
+     * Most headers (stdio.h, project public headers) are included by
+     * many sources; the cache amortizes the syscall to one per unique
+     * dep across the whole build instead of one per source × deps. */
     for (size_t d = 0; d < entry->dep_count; d++) {
         if (!entry->deps[d] || !entry->dep_hashes[d])
             return 1;
-        struct stat dst;
-        if (stat(entry->deps[d], &dst) != 0)
+        long long dep_mtime = 0;
+        if (!now_stat_cached(stat_cache, entry->deps[d], &dep_mtime))
             return 1;  /* dep deleted or unreadable */
         /* Fast path: if dep has mtime stored and it matches, skip hash */
         if (d < entry->dep_mtime_count && entry->dep_mtimes &&
-            (long long)dst.st_mtime == entry->dep_mtimes[d])
+            dep_mtime == entry->dep_mtimes[d])
             continue;
         /* mtime differs or not tracked — hash to confirm */
         char *dh = now_sha256_file(entry->deps[d]);

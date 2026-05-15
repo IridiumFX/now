@@ -1082,6 +1082,7 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     now_filelist_init(&ctx->dep_libdirs);
     now_filelist_init(&ctx->dep_libs);
     now_filelist_init(&ctx->dep_lib_dirs_raw);
+    now_stat_cache_init(&ctx->stat_cache);
 
     now_lang_registry_init();
     now_toolchain_resolve(&ctx->toolchain, project);
@@ -2396,7 +2397,7 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
 
         /* Check manifest for incremental skip */
         const NowManifestEntry *entry = now_manifest_find(&manifest, src);
-        if (!now_manifest_needs_rebuild(entry, ctx->basedir, src, fhash)) {
+        if (!now_manifest_needs_rebuild(entry, ctx->basedir, src, fhash, &ctx->stat_cache)) {
             if (entry->object)
                 now_filelist_push(&ctx->objects, entry->object);
             skipped++;
@@ -4187,4 +4188,5 @@ NOW_API void now_build_free(NowBuildCtx *ctx) {
     now_filelist_free(&ctx->dep_libdirs);
     now_filelist_free(&ctx->dep_libs);
     now_filelist_free(&ctx->dep_lib_dirs_raw);
+    now_stat_cache_free(&ctx->stat_cache);
 }
