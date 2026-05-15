@@ -126,6 +126,44 @@ static char *build_cmdline(const char *const *argv) {
     }
     return cmdline;
 }
+
+/* Write argv[1..] to a temp file in gcc/ld "@response file" format —
+ * one arg per line, double-quoted, with " and \ escaped. Returns a
+ * heap path (without leading '@'). Caller invokes argv[0] with
+ * "@<path>" as the sole real argument, and unlinks the file after. */
+static char *write_response_file(const char *const *argv) {
+    const char *tmpdir = getenv("TEMP");
+    if (!tmpdir) tmpdir = getenv("TMP");
+    if (!tmpdir) tmpdir = ".";
+
+    static volatile long counter = 0;
+    char *path = malloc(MAX_PATH);
+    if (!path) return NULL;
+    long my_id = ++counter;
+    snprintf(path, MAX_PATH, "%s\\now-rsp-%lu-%ld.txt",
+             tmpdir, (unsigned long)GetCurrentProcessId(), my_id);
+
+    FILE *f = fopen(path, "w");
+    if (!f) { free(path); return NULL; }
+    for (const char *const *a = argv + 1; *a; a++) {
+        fputc('"', f);
+        for (const char *p = *a; *p; p++) {
+            if (*p == '"' || *p == '\\') fputc('\\', f);
+            fputc(*p, f);
+        }
+        fputc('"', f);
+        fputc('\n', f);
+    }
+    fclose(f);
+    return path;
+}
+
+/* CreateProcessA's lpCommandLine maxes out at 32 767 chars. With ~700
+ * object paths at ~80 chars each the test link blows past that and
+ * the spawn fails (apennines hit this). When cmdline would exceed
+ * this threshold, write argv to a response file and re-invoke argv[0]
+ * with "@<path>" as the sole real argument. */
+#define NOW_CMDLINE_RSP_THRESHOLD 30000
 #endif
 
 /* Spawn argv with optional working directory. cwd == NULL inherits the
@@ -146,6 +184,21 @@ NOW_API int now_exec_in_dir(const char *const *argv, int verbose, const char *cw
     char *cmdline = build_cmdline(argv);
     if (!cmdline) return -1;
 
+    /* Fall back to a response file when cmdline exceeds CreateProcess's
+     * 32K limit (apennines test link: 684 .o paths → ~55KB → spawn
+     * fails). gcc/ld both natively support `@file` semantics. */
+    char *rsp_path = NULL;
+    if (strlen(cmdline) > NOW_CMDLINE_RSP_THRESHOLD) {
+        free(cmdline);
+        rsp_path = write_response_file(argv);
+        if (!rsp_path) return -1;
+        char rsp_arg[MAX_PATH + 2];
+        snprintf(rsp_arg, sizeof(rsp_arg), "@%s", rsp_path);
+        const char *short_argv[] = { argv[0], rsp_arg, NULL };
+        cmdline = build_cmdline(short_argv);
+        if (!cmdline) { _unlink(rsp_path); free(rsp_path); return -1; }
+    }
+
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
@@ -159,6 +212,7 @@ NOW_API int now_exec_in_dir(const char *const *argv, int verbose, const char *cw
     if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
                         0, NULL, cwd, &si, &pi)) {
         free(cmdline);
+        if (rsp_path) { _unlink(rsp_path); free(rsp_path); }
         return -1;
     }
     free(cmdline);
@@ -168,6 +222,7 @@ NOW_API int now_exec_in_dir(const char *const *argv, int verbose, const char *cw
     GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    if (rsp_path) { _unlink(rsp_path); free(rsp_path); }
     return (int)exit_code;
 
 #else
@@ -3623,7 +3678,15 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
                 snprintf(tbin, sizeof(tbin), "%s/%s", test_bin_dir, name);
 #endif
 
-                const char *largv[512];
+                /* Per-test argv: 1 test object + every production .o +
+                 * libs + libdirs. Same overflow class as single-mode at
+                 * scale — dynamically size. */
+                size_t lneed = 1 + ctx->objects.count
+                             + p->link.libdirs.count + ctx->dep_libdirs.count
+                             + p->link.libs.count + ctx->dep_libs.count
+                             + 32;
+                const char **largv = (const char **)malloc(lneed * sizeof(char *));
+                if (!largv) { fail++; continue; }
                 int largc = 0;
                 char *lbufs[64];
                 size_t nl = 0;
@@ -3710,6 +3773,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
                 int link_rc = now_exec(largv, ctx->verbose);
                 for (size_t i = 0; i < nl; i++) free(lbufs[i]);
+                free(largv);
 
                 if (link_rc != 0) {
                     fprintf(stderr, "  [FAIL] %s — link error (exit %d)\n", name, link_rc);
@@ -3798,7 +3862,26 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
         }
     }
 
-    const char *argv[512];
+    /* argv must fit every test_objects entry + every production .o +
+     * libdirs + libs + dep_lib(dir)s + a handful of fixed slots. A
+     * fixed 512-slot stack buffer overflows once test + production
+     * objects together exceed ~500 (apennines hit 684 → stack smash
+     * → segfault before any link output). Compute the worst-case
+     * count and malloc just enough. */
+    size_t need = test_objects.count + ctx->objects.count
+                  + p->link.libdirs.count + ctx->dep_libdirs.count
+                  + p->link.libs.count + ctx->dep_libs.count
+                  + 32;
+    const char **argv = (const char **)malloc(need * sizeof(char *));
+    if (!argv) {
+        now_filelist_free(&test_objects);
+        if (result) {
+            result->code = NOW_ERR_TOOL;
+            snprintf(result->message, sizeof(result->message),
+                     "out of memory linking test binary");
+        }
+        return -1;
+    }
     int argc = 0;
     char *lib_bufs[64];
     size_t nlib = 0;
@@ -3897,6 +3980,7 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
     rc = now_exec(argv, ctx->verbose);
 
     for (size_t i = 0; i < nlib; i++) free(lib_bufs[i]);
+    free(argv);
     now_filelist_free(&test_objects);
 
     if (rc != 0) {
