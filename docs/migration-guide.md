@@ -178,6 +178,30 @@ Once `now build` works with your current layout:
 
 Each step is independently revertable with `git checkout .`.
 
+### `.gitignore` gotcha — host binaries named after directories
+
+If you adopt the `hosts/<binary-name>/` Maven layout for multi-executable projects, audit your `.gitignore` for bare binary-name entries first. The classic shape:
+
+```
+# .gitignore — common when tests build stem-named binaries at repo root
+csinterp
+test_p0
+test_lexer
+```
+
+Bare entries match anywhere in the tree, including the new `hosts/csinterp/` directory. The effect is silent: `git add hosts/csinterp/now.pasta` no-ops and the pasta drops out of your commit. The build still works (file is on disk), but the project doesn't track the descriptor.
+
+Fix: anchor with a leading `/`:
+
+```
+# .gitignore — anchored
+/csinterp
+/test_p0
+/test_lexer
+```
+
+Or move binary outputs into a path no source dir shares (e.g. `build/bin/`) and ignore the path instead.
+
 ---
 
 ## Importer Limitations

@@ -226,6 +226,19 @@ Optimization levels:
 }
 ```
 
+`depends:` is accepted as a Maven-friendly alias for `deps:`; when both are present, `deps:` wins. Use whichever your team finds clearer.
+
+Entries accept either the compact `id:` shorthand or the long-form `{group, artifact, version}` shape — both produce the same coordinate:
+
+```pasta
+{
+  depends: [
+    { id: "org.acme:core:^1.5.0" },                          ; shorthand
+    { group: "org.acme", artifact: "proto", version: "*" }   ; long form
+  ]
+}
+```
+
 ### Scopes
 
 | Scope | Compile | Link | Ship | Test |
@@ -321,6 +334,43 @@ The test binary exit code determines pass/fail (0 = pass).
 - [Check](https://libcheck.github.io/check/)
 - [cmocka](https://cmocka.org/)
 
+When the project is an `output.type: "executable"`, the production entry-point TU (`src/main/c/main.c`, or `.cpp/.cc/.cxx`) is automatically filtered out of the test link so the test source's `main()` doesn't collide with the project's. No configuration needed.
+
+### Test Modes
+
+```pasta
+{
+  tests: {
+    dir:  "src/test/c",
+    mode: "single"   ; "single" (default) | "each"
+  }
+}
+```
+
+- `mode: "single"` — every test source compiles and links into one binary at `target/bin/<artifact>-test.exe`. A single `main()` calls test cases.
+- `mode: "each"` — each test source links into its own binary under `target/test/bin/<source-name>.exe`. Each file has its own `main()`; `now test` runs them all in turn. Mirrors CTest's per-test executable shape — useful when migrating projects that already have one-test-per-file conventions.
+
+### Test Fixtures
+
+When tests need to find data files at runtime, two mechanisms cover the common cases:
+
+```pasta
+{
+  tests: {
+    defines: [ "FIXTURES=\"src/test/resources\"" ],
+    env:     [ "MYAPP_DATA_DIR=src/test/resources" ]
+  }
+}
+```
+
+- `tests.defines` — extra `-D` macros injected at test compile time. Use for paths baked in as C string literals.
+- `tests.env` — `KEY=VAL` pairs set in the test binary's environment at launch.
+- The test binary is run with `cwd` set to the module root (not `target/bin/`), so relative resource paths resolve against your source tree.
+
+### Incremental Test Re-Runs
+
+`now test` skips both compile and link when nothing has changed. Test compile uses an mtime check against each source's `.o`; test link compares mtime against every input object. No-op `now test` runs in milliseconds; the test binary is invoked only if its inputs (or its own outputs) are absent or stale.
+
 ---
 
 ## 8. Parallel Builds
@@ -399,6 +449,55 @@ now build -v        # shows wave-by-wave progress
 ### Cycle Detection
 
 Circular module dependencies are detected and reported before building begins.
+
+### Sibling Auto-Injection
+
+When a module's `depends:` (or `deps:`) entry resolves to a workspace sibling, `now` auto-injects everything the consumer needs to compile and link without re-declaring per-consumer:
+
+| Auto-injected | From sibling |
+|---|---|
+| `compile.includes` | `<sibling>/src/main/h` |
+| `link.libdirs` | `<sibling>/target/bin` |
+| `link.libs` | sibling's `output.name` (or `artifact` if name unset) |
+| `compile.defines` | `<UPPER>_STATIC` (only when sibling is `output.type: "static"`) |
+
+A consumer two hops down the DAG also inherits its intermediate siblings' `link.libs` and `link.libdirs` transitively, so a host executable only needs to list its *direct* sibling deps:
+
+```pasta
+; hosts/cli/now.pasta — depends on parser (which depends on core)
+{
+  artifact: "cli",
+  output:   { type: "executable", name: "mytool" },
+  depends:  [{ id: "org.acme:parser:*" }]
+  ; core's libdir + name flow in transitively via parser
+}
+```
+
+Pushes are deduped, so listing the same dep twice (e.g. for clarity) is harmless. Workspace authors don't need to declare modules in topological order — inject runs N passes over N modules until convergence.
+
+`output.type: "executable"` siblings are skipped (not linkable), and `output.type: "header-only"` siblings contribute only the include path.
+
+### Shared-Library Runtime Co-Location (Windows)
+
+When a workspace executable links against a sibling built with `output.type: "shared"` (or against a procured shared dep), `now` automatically copies the producer's `.dll` next to the consumer's `.exe` in `target/bin/`. This is Windows-only — POSIX bakes `-Wl,-rpath` at link time, so the binary finds its libraries without staging.
+
+### OS-Conditional Sub-Blocks
+
+`compile:` and `link:` accept nested OS-keyed sub-blocks. When the host triple matches the key, that block's arrays are appended to the parent. Non-matching keys are ignored.
+
+```pasta
+{
+  link: {
+    flags: ["-pthread"],
+    windows: { libs: ["ws2_32", "bcrypt", "winmm"] },
+    posix:   { libs: ["m"] },
+    linux:   { libs: ["rt"] },
+    macos:   { flags: ["-framework", "CoreFoundation"] }
+  }
+}
+```
+
+Recognised keys: `windows`, `linux`, `macos`, `freebsd`, `openbsd`, `netbsd` (specific OSes); `posix`, `unix` (group aliases — anything-not-windows). Use these for OS-specific link libraries, compiler flags, and defines without shell-detect ceremony in your build script.
 
 ---
 

@@ -1,9 +1,38 @@
 # now — v1.0 Release Candidate
 
 **Version**: 1.0.0-rc2
-**Date**: 2026-04-19
-**Tests**: 313 passing
+**Date**: 2026-05-16
+**Tests**: 315 passing
 **Languages**: C (production) · C++ (works) · Rust FFI (works) · Go / Java / asm (experimental) · Julia (not yet implemented)
+
+---
+
+## Recent Changes (week of 2026-05-13)
+
+Driven by the starletc and vulpes-iff migrations + a vesuvius field-test pass. See the user guide for usage; this section is the changelog.
+
+**Workspace & dependency resolution**
+- `depends:` accepted as Maven-friendly alias for `deps:`.
+- Long-form `{group, artifact, version}` dep entries supported alongside the `{id: "g:a:v"}` shorthand.
+- Workspace sibling auto-injection: declaring a `depends:` on a sibling module pulls its `src/main/h` into `compile.includes`, its `target/bin` into `link.libdirs`, its `output.name` into `link.libs`, and (for static libs) its `<UPPER>_STATIC` define into `compile.defines`. Pushes are deduped; transitive deps flow through the DAG without per-consumer re-declaration. Multi-pass convergence so workspace authors aren't required to list modules in topological order.
+- `link.windows.libs`, `link.posix.libs`, etc. — OS-conditional sub-blocks nested in `compile:` / `link:`. Matching block's arrays append to the parent. Recognised keys: `windows`, `linux`, `macos`, `freebsd`, `openbsd`, `netbsd`, `posix`, `unix`.
+
+**Executable hosts**
+- Windows: shared-lib siblings (and procured shared deps) are auto-staged next to consumer `.exe` artifacts. No more post-build `cp basta.dll`.
+- GNU ld static-archive back-references handled via `-Wl,--start-group/--end-group` wrap.
+- MinGW static archive naming corrected to `libNAME.a` (was producing `NAME.lib`, unfindable by `-lNAME`).
+- `now_path_join` no longer doubles absolute paths.
+
+**Tests**
+- `tests.mode: "each"` — one binary per test source file (CTest-style).
+- `tests.defines` and `tests.env` — compile-time `-D` macros and runtime env vars for test fixtures.
+- Test binary's `cwd` set to module root so relative resource paths resolve.
+- Test compile + link now skip when up-to-date (mtime check; no more 10s no-op runs at scale).
+- Executable project's `main.c` TU automatically filtered from the test link so `main()` symbols don't collide.
+- Workspace-aware `now test` walks every module's tests in topo order.
+
+**Migration**
+- See `docs/migration-guide.md` for the `.gitignore` stem-binary-name gotcha that surfaces when adopting `hosts/<binary-name>/` layout.
 
 ---
 
@@ -34,8 +63,9 @@ now watch         # rebuild on file changes
   version:  "1.0.0",
   lang:     "c",
   sources:  { dir: "src/main/c", headers: "src/main/h" },
-  compile:  { warnings: ["Wall", "Wextra"], std: "c11" },
-  link:     { output: "shared" },
+  output:   { type: "shared", name: "mylib" },
+  compile:  { warnings: ["Wall", "Wextra"], std: "c11", defines: ["MYLIB_BUILDING"] },
+  link:     { windows: { libs: ["ws2_32"] } },
   deps:     [{ id: "org.acme:core:^1.5.0" }]
 }
 ```
