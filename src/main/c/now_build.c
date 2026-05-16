@@ -1275,6 +1275,13 @@ typedef struct {
     char  *source_hash; /* SHA-256 of source file (for cache/manifest reuse) */
     char  *cache_key;   /* content-addressable cache key */
     char  *dep_path;    /* path to .d depfile (GCC/Clang) or NULL (MSVC) */
+    long long pre_mtime; /* source mtime captured BEFORE compile starts.
+                          * Stored in manifest after compile completes so
+                          * the next build's mtime-match check reflects
+                          * the content gcc actually saw. Captures-after-
+                          * compile would miss edits made during the
+                          * compile window and cause stale-binary bugs
+                          * (apennines + starletc reported this). */
 } NowCompileJob;
 
 static void compile_job_free(NowCompileJob *job) {
@@ -2545,6 +2552,20 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
             jrc = build_compile_job(ctx, src, type, lang, &jobs[njobs]);
 
         if (jrc == 0) {
+            /* Capture source mtime NOW, before gcc runs. If we capture
+             * post-compile and the user edits during the compile window,
+             * the manifest records the edit's mtime — next build sees
+             * "mtime matches" and skips, leaving a stale binary
+             * (apennines + starletc both reported this bug). */
+            {
+                char *src_full_now = now_path_join(ctx->basedir, src);
+                if (src_full_now) {
+                    struct stat src_st_pre;
+                    if (stat(src_full_now, &src_st_pre) == 0)
+                        jobs[njobs].pre_mtime = (long long)src_st_pre.st_mtime;
+                    free(src_full_now);
+                }
+            }
             /* Inject reproducibility flags into the job argv */
             if (repro_flag_count > 0 && repro_flags) {
                 NowCompileJob *job = &jobs[njobs];
@@ -2687,14 +2708,13 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                 if (job->dep_path)
                     now_depfile_parse(job->dep_path, src_full, &deps);
 
-                /* Update manifest */
+                /* Update manifest using the PRE-compile mtime captured
+                 * before gcc ran. Re-statting here would catch any edits
+                 * made during the compile window and cause next-build
+                 * skip-with-stale-binary. */
                 char *src_hash = src_full ? now_sha256_file_memo(src_full, &hash_memo) : NULL;
-                struct stat st;
-                long long mtime = 0;
-                if (src_full && stat(src_full, &st) == 0)
-                    mtime = (long long)st.st_mtime;
                 now_manifest_set(&manifest, job->src_rel, job->obj_path,
-                                 src_hash, fhash, mtime);
+                                 src_hash, fhash, job->pre_mtime);
 
                 /* Store dep info in manifest */
                 if (deps.count > 0) {
@@ -2841,14 +2861,12 @@ NOW_API int now_build_compile(NowBuildCtx *ctx, NowResult *result) {
                         else if (job->dep_path)
                             now_depfile_parse(job->dep_path, src_full, &deps);
 
-                        /* Update manifest */
+                        /* Update manifest with the pre-compile mtime
+                         * captured before gcc ran (see same comment in
+                         * the non-cached path above). */
                         char *src_hash = src_full ? now_sha256_file_memo(src_full, &hash_memo) : NULL;
-                        struct stat st;
-                        long long mtime = 0;
-                        if (src_full && stat(src_full, &st) == 0)
-                            mtime = (long long)st.st_mtime;
                         now_manifest_set(&manifest, job->src_rel, job->obj_path,
-                                         src_hash, fhash, mtime);
+                                         src_hash, fhash, job->pre_mtime);
 
                         /* Store dep info in manifest */
                         if (deps.count > 0) {
