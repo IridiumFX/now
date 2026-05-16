@@ -11,6 +11,16 @@
 #include "now_pom.h"
 #include "now.h"
 
+/* Open-addressed string set, used by workspace inject to make
+ * push_unique O(1) instead of O(N) per call. Entries point at
+ * strings owned by the corresponding NowStrArray; the set never
+ * frees them. */
+typedef struct {
+    char  **slots;     /* NULL = empty */
+    size_t  capacity;  /* power-of-2 */
+    size_t  count;
+} NowWsStrSet;
+
 /* A single module in the workspace */
 typedef struct {
     char       *name;       /* directory name (e.g. "core", "net") */
@@ -18,6 +28,12 @@ typedef struct {
     NowProject *project;    /* loaded project descriptor */
     int         in_degree;  /* number of unbuilt deps (for Kahn's) */
     int         built;      /* 1 if already built */
+    /* Membership-only mirrors of the four arrays workspace inject
+     * accumulates into. Lifetime = workspace; freed in workspace_free. */
+    NowWsStrSet seen_includes;
+    NowWsStrSet seen_libdirs;
+    NowWsStrSet seen_libs;
+    NowWsStrSet seen_defines;
 } NowModule;
 
 /* The full workspace */

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 /* ---- Workspace detection ---- */
 
@@ -81,13 +82,84 @@ static int find_sibling(NowWorkspace *ws, const char *dep_id) {
     return find_module(ws, artifact);
 }
 
+/* String-set helpers — open-addressed, linear probe, FNV-1a. */
+static uint32_t ws_hash(const char *s) {
+    uint32_t h = 0x811c9dc5u;
+    while (*s) { h ^= (uint8_t)*s++; h *= 0x01000193u; }
+    return h;
+}
+
+static void ws_set_free(NowWsStrSet *s) {
+    free(s->slots);
+    s->slots = NULL;
+    s->capacity = s->count = 0;
+}
+
+static int ws_set_grow(NowWsStrSet *s) {
+    size_t old_cap = s->capacity;
+    char **old = s->slots;
+    size_t new_cap = old_cap ? old_cap * 2 : 16;
+    char **nslots = (char **)calloc(new_cap, sizeof(char *));
+    if (!nslots) return -1;
+    size_t mask = new_cap - 1;
+    for (size_t i = 0; i < old_cap; i++) {
+        if (!old[i]) continue;
+        size_t j = ws_hash(old[i]) & mask;
+        while (nslots[j]) j = (j + 1) & mask;
+        nslots[j] = old[i];
+    }
+    free(old);
+    s->slots = nslots;
+    s->capacity = new_cap;
+    return 0;
+}
+
+/* Returns 1 if `v` was added, 0 if it was already present (O(1) avg). */
+static int ws_set_add(NowWsStrSet *s, char *v) {
+    if (!v) return 0;
+    if ((s->count + 1) * 2 > s->capacity) {
+        if (ws_set_grow(s) != 0) return 0;
+    }
+    size_t mask = s->capacity - 1;
+    size_t j = ws_hash(v) & mask;
+    for (;;) {
+        char *cur = s->slots[j];
+        if (!cur) { s->slots[j] = v; s->count++; return 1; }
+        if (strcmp(cur, v) == 0) return 0;
+        j = (j + 1) & mask;
+    }
+}
+
 /* Append-if-absent helper — dedups while preserving insertion order.
  * Transitive propagation can otherwise produce N² duplicates as each
  * level of the DAG inherits the prior level's full link.libs, which
  * blew past a fixed-size buffer cap in the link loop and silently
- * dropped legitimate entries near the tail (starletc FINDING-E). */
-static void push_unique(NowStrArray *a, const char *s) {
+ * dropped legitimate entries near the tail (starletc FINDING-E).
+ *
+ * Uses the per-array NowWsStrSet for O(1) membership; falls back to
+ * a linear scan if the set wasn't initialized (callers from outside
+ * the workspace flow). */
+static void push_unique(NowStrArray *a, NowWsStrSet *set, const char *s) {
     if (!s) return;
+    if (set) {
+        /* Membership check via set (O(1) avg) */
+        if (set->capacity) {
+            size_t mask = set->capacity - 1;
+            size_t j = ws_hash(s) & mask;
+            for (;;) {
+                char *cur = set->slots[j];
+                if (!cur) break;
+                if (strcmp(cur, s) == 0) return;
+                j = (j + 1) & mask;
+            }
+        }
+        /* Not present — push to array, then record the strdup'd
+         * pointer in the set so later checks see it. */
+        if (now_strarray_push(a, s) == 0 && a->count > 0)
+            ws_set_add(set, a->items[a->count - 1]);
+        return;
+    }
+    /* No set — fall back to linear scan (external callers) */
     for (size_t i = 0; i < a->count; i++)
         if (strcmp(a->items[i], s) == 0) return;
     now_strarray_push(a, s);
@@ -126,15 +198,15 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
 
         char path[1024];
         snprintf(path, sizeof(path), "%s/src/main/h", sdir);
-        push_unique(&cp->compile.includes, path);
+        push_unique(&cp->compile.includes, &consumer->seen_includes, path);
 
         int is_header_only = otype && strcmp(otype, "header-only") == 0;
         if (!is_header_only) {
             snprintf(path, sizeof(path), "%s/target/bin", sdir);
-            push_unique(&cp->link.libdirs, path);
+            push_unique(&cp->link.libdirs, &consumer->seen_libdirs, path);
 
             const char *lib = sp->output.name ? sp->output.name : sp->artifact;
-            if (lib) push_unique(&cp->link.libs, lib);
+            if (lib) push_unique(&cp->link.libs, &consumer->seen_libs, lib);
 
             /* Transitive system/external link.libs (e.g. apennines's
              * ws2_32/bcrypt/winmm). Static-linking a sibling drags
@@ -143,7 +215,8 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
              * filtered by the pom loader's OS-block pass. Deduped to
              * avoid N² growth as the DAG accumulates levels. */
             for (size_t k = 0; k < sp->link.libs.count; k++)
-                push_unique(&cp->link.libs, sp->link.libs.items[k]);
+                push_unique(&cp->link.libs, &consumer->seen_libs,
+                            sp->link.libs.items[k]);
 
             /* Transitive libdirs too — consumers two hops down the DAG
              * need every intermediate sibling's target/bin on the link
@@ -151,7 +224,8 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
              * starletc workaround #2 (each host re-listing 27 transitive
              * sibling depends just for the libdir side-effect). */
             for (size_t k = 0; k < sp->link.libdirs.count; k++)
-                push_unique(&cp->link.libdirs, sp->link.libdirs.items[k]);
+                push_unique(&cp->link.libdirs, &consumer->seen_libdirs,
+                            sp->link.libdirs.items[k]);
         }
 
         if (otype && strcmp(otype, "static") == 0) {
@@ -160,7 +234,7 @@ static void inject_sibling_artifacts(NowWorkspace *ws, int consumer_idx) {
             if (m) {
                 char def[256];
                 snprintf(def, sizeof(def), "%s_STATIC", m);
-                push_unique(&cp->compile.defines, def);
+                push_unique(&cp->compile.defines, &consumer->seen_defines, def);
                 free(m);
             }
         }
@@ -478,6 +552,10 @@ NOW_API void now_workspace_free(NowWorkspace *ws) {
         free(ws->modules[i].dir);
         if (ws->modules[i].project)
             now_project_free(ws->modules[i].project);
+        ws_set_free(&ws->modules[i].seen_includes);
+        ws_set_free(&ws->modules[i].seen_libdirs);
+        ws_set_free(&ws->modules[i].seen_libs);
+        ws_set_free(&ws->modules[i].seen_defines);
     }
     free(ws->modules);
 

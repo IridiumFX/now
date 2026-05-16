@@ -111,11 +111,22 @@ static int procure_and_inject_deps(const NowProject *project,
     if (!project || project->deps.count == 0)
         return 0;
 
-    /* Run procure (non-fatal — locally-installed deps still work) */
-    NowProcureOpts opts = {0};
-    NowResult procure_res;
-    memset(&procure_res, 0, sizeof(procure_res));
-    (void)now_procure(project, &opts, &procure_res);
+    /* Skip the registry call entirely if every dep was already wired up
+     * by workspace inject (sibling modules). Without this, a workspace
+     * with N modules pays an N × (registry timeout) tax — measured at
+     * ~2s per module on starletc's 28-module tree (56s wall waste).
+     * non_local==0 → all deps satisfied by siblings → skip procure. */
+    int non_local = 0;
+    for (size_t i = 0; i < project->deps.count; i++) {
+        if (!project->deps.items[i].is_workspace_local) { non_local = 1; break; }
+    }
+    if (non_local) {
+        /* Run procure (non-fatal — locally-installed deps still work) */
+        NowProcureOpts opts = {0};
+        NowResult procure_res;
+        memset(&procure_res, 0, sizeof(procure_res));
+        (void)now_procure(project, &opts, &procure_res);
+    }
 
     /* Determine repo root */
     const char *home = NULL;
