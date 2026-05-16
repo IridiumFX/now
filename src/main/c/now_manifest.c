@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <sys/stat.h>
 
 /* ---- Minimal SHA-256 (public domain, from Brad Conte) ---- */
@@ -177,17 +178,59 @@ NOW_API void now_manifest_free(NowManifest *m) {
     }
     free(m->entries);
     free(m->link_flags_hash);
+    free(m->index_buckets);
     now_manifest_init(m);
+}
+
+/* FNV-1a on the source path */
+static uint32_t mf_hash(const char *s) {
+    uint32_t h = 0x811c9dc5u;
+    while (*s) { h ^= (uint8_t)*s++; h *= 0x01000193u; }
+    return h;
+}
+
+/* Build (or rebuild) the source-path index. Called on demand when
+ * lookups happen and the index is missing or stale. */
+static void mf_index_build(NowManifest *m) {
+    free(m->index_buckets);
+    size_t cap = 16;
+    while (cap < m->count * 2) cap *= 2;  /* ≤50% load */
+    m->index_buckets = (int *)malloc(cap * sizeof(int));
+    if (!m->index_buckets) { m->index_cap = 0; return; }
+    m->index_cap = cap;
+    size_t mask = cap - 1;
+    for (size_t i = 0; i < cap; i++) m->index_buckets[i] = -1;
+    for (size_t i = 0; i < m->count; i++) {
+        if (!m->entries[i].source) continue;
+        size_t j = mf_hash(m->entries[i].source) & mask;
+        while (m->index_buckets[j] != -1) j = (j + 1) & mask;
+        m->index_buckets[j] = (int)i;
+    }
 }
 
 NOW_API const NowManifestEntry *now_manifest_find(const NowManifest *m,
                                             const char *source) {
-    if (!m || !source) return NULL;
-    for (size_t i = 0; i < m->count; i++) {
-        if (strcmp(m->entries[i].source, source) == 0)
-            return &m->entries[i];
+    if (!m || !source || m->count == 0) return NULL;
+    /* Lazy index build. Cast away const — the index is a derived
+     * cache, not part of the logical "value" of the manifest. */
+    NowManifest *mm = (NowManifest *)m;
+    if (!mm->index_buckets) mf_index_build(mm);
+    if (!mm->index_buckets) {
+        /* OOM fallback — linear scan */
+        for (size_t i = 0; i < m->count; i++)
+            if (strcmp(m->entries[i].source, source) == 0)
+                return &m->entries[i];
+        return NULL;
     }
-    return NULL;
+    size_t mask = mm->index_cap - 1;
+    size_t j = mf_hash(source) & mask;
+    for (;;) {
+        int idx = mm->index_buckets[j];
+        if (idx < 0) return NULL;
+        if (strcmp(m->entries[idx].source, source) == 0)
+            return &m->entries[idx];
+        j = (j + 1) & mask;
+    }
 }
 
 NOW_API int now_manifest_set(NowManifest *m, const char *source,

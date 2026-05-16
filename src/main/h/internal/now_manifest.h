@@ -31,6 +31,11 @@ typedef struct {
     size_t            count;
     size_t            capacity;
     char             *link_flags_hash;  /* hex SHA-256 of link flag string */
+    /* O(1) source-path → entry index. Built lazily on first
+     * now_manifest_find. Lifetime-tied to entries[] — when entries
+     * resize, the index is dropped and rebuilt on the next lookup. */
+    int              *index_buckets;    /* entry idx or -1; size = index_cap */
+    size_t            index_cap;        /* power-of-2, 0 if unbuilt */
 } NowManifest;
 
 NOW_API void now_manifest_init(NowManifest *m);
