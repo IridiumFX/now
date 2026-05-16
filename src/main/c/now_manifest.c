@@ -389,24 +389,155 @@ NOW_API int now_manifest_needs_rebuild(const NowManifestEntry *entry,
 
 /* ---- Serialization (Pasta format) ---- */
 
+/* ---- Binary manifest format ----------------------------------------
+ *
+ * Layout (little-endian):
+ *   [4B] magic        = 'N','M','N','F'
+ *   [1B] version      = 0x01
+ *   [3B] reserved
+ *   [4B] lfh_len, [N] bytes (link_flags_hash, no NUL)
+ *   [4B] entry_count
+ *   per entry:
+ *     [4B] src_len,         [N] bytes
+ *     [4B] obj_len,         [N] bytes
+ *     [4B] source_hash_len, [N] bytes
+ *     [4B] flags_hash_len,  [N] bytes
+ *     [8B] mtime (int64)
+ *     [4B] dep_count
+ *     per dep:
+ *       [4B] path_len,      [N] bytes
+ *       [4B] hash_len,      [N] bytes
+ *       [8B] mtime (int64)
+ *
+ * Why custom: pasta parsing of the cookbook manifest (~2.6MB, 70
+ * entries × 30 deps) ran ~50ms per load. Binary read is memcpy-bound,
+ * ~5ms at the same size. Workspaces multiply the win by module count.
+ *
+ * Reads transparently fall through to the legacy pasta path if the
+ * magic isn't present, so existing on-disk manifests keep working
+ * until the first save migrates them. */
+
+static int read_all(const char *path, unsigned char **out, size_t *out_len) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (len < 0) { fclose(fp); return -1; }
+    unsigned char *buf = malloc((size_t)len + 1);
+    if (!buf) { fclose(fp); return -1; }
+    size_t nread = fread(buf, 1, (size_t)len, fp);
+    buf[nread] = '\0';
+    fclose(fp);
+    *out = buf;
+    *out_len = nread;
+    return 0;
+}
+
+/* Bounds-safe little-endian readers. p advances; end is the limit. */
+static int read_u32(const unsigned char **p, const unsigned char *end, uint32_t *out) {
+    if (*p + 4 > end) return -1;
+    *out = (uint32_t)(*p)[0] | ((uint32_t)(*p)[1] << 8)
+         | ((uint32_t)(*p)[2] << 16) | ((uint32_t)(*p)[3] << 24);
+    *p += 4;
+    return 0;
+}
+static int read_i64(const unsigned char **p, const unsigned char *end, long long *out) {
+    if (*p + 8 > end) return -1;
+    uint64_t v = (uint64_t)(*p)[0] | ((uint64_t)(*p)[1] << 8)
+               | ((uint64_t)(*p)[2] << 16) | ((uint64_t)(*p)[3] << 24)
+               | ((uint64_t)(*p)[4] << 32) | ((uint64_t)(*p)[5] << 40)
+               | ((uint64_t)(*p)[6] << 48) | ((uint64_t)(*p)[7] << 56);
+    *p += 8;
+    *out = (long long)v;
+    return 0;
+}
+static int read_str(const unsigned char **p, const unsigned char *end, char **out) {
+    uint32_t len;
+    if (read_u32(p, end, &len) != 0) return -1;
+    if (*p + len > end) return -1;
+    *out = NULL;
+    if (len > 0) {
+        char *s = malloc((size_t)len + 1);
+        if (!s) return -1;
+        memcpy(s, *p, len);
+        s[len] = '\0';
+        *out = s;
+    }
+    *p += len;
+    return 0;
+}
+
+static int now_manifest_load_bin(NowManifest *m, const unsigned char *buf, size_t len) {
+    const unsigned char *p = buf, *end = buf + len;
+    if (end - p < 8) return -1;
+    if (memcmp(p, "NMNF", 4) != 0) return -1;
+    p += 4;
+    if (*p != 0x01) return -1;  /* version */
+    p += 4;  /* version + 3 reserved */
+
+    if (read_str(&p, end, &m->link_flags_hash) != 0) return -1;
+
+    uint32_t entry_count;
+    if (read_u32(&p, end, &entry_count) != 0) return -1;
+
+    if (entry_count > 0) {
+        m->entries = calloc(entry_count, sizeof(NowManifestEntry));
+        if (!m->entries) return -1;
+        m->capacity = entry_count;
+    }
+    for (uint32_t i = 0; i < entry_count; i++) {
+        NowManifestEntry *e = &m->entries[i];
+        if (read_str(&p, end, &e->source)      != 0) return -1;
+        if (read_str(&p, end, &e->object)      != 0) return -1;
+        if (read_str(&p, end, &e->source_hash) != 0) return -1;
+        if (read_str(&p, end, &e->flags_hash)  != 0) return -1;
+        if (read_i64(&p, end, &e->mtime)       != 0) return -1;
+        uint32_t dc;
+        if (read_u32(&p, end, &dc) != 0) return -1;
+        if (dc > 0) {
+            e->deps        = calloc(dc, sizeof(char *));
+            e->dep_hashes  = calloc(dc, sizeof(char *));
+            e->dep_mtimes  = calloc(dc, sizeof(long long));
+            if (!e->deps || !e->dep_hashes || !e->dep_mtimes) return -1;
+            e->dep_count = dc;
+            e->dep_mtime_count = dc;
+        }
+        for (uint32_t d = 0; d < dc; d++) {
+            if (read_str(&p, end, &e->deps[d])       != 0) return -1;
+            if (read_str(&p, end, &e->dep_hashes[d]) != 0) return -1;
+            if (read_i64(&p, end, &e->dep_mtimes[d]) != 0) return -1;
+        }
+        m->count++;
+    }
+    return 0;
+}
+
 NOW_API int now_manifest_load(NowManifest *m, const char *path) {
     now_manifest_init(m);
 
     if (!now_path_exists(path)) return 0;  /* no manifest yet → empty */
 
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return -1;
+    unsigned char *raw = NULL;
+    size_t raw_len = 0;
+    if (read_all(path, &raw, &raw_len) != 0) return -1;
 
-    fseek(fp, 0, SEEK_END);
-    long len = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    /* Sniff magic for binary format */
+    if (raw_len >= 4 && memcmp(raw, "NMNF", 4) == 0) {
+        int rc = now_manifest_load_bin(m, raw, raw_len);
+        free(raw);
+        if (rc != 0) {
+            now_manifest_free(m);
+            now_manifest_init(m);
+            return -1;
+        }
+        return 0;
+    }
 
-    char *buf = malloc((size_t)len + 1);
-    if (!buf) { fclose(fp); return -1; }
-    size_t nread = fread(buf, 1, (size_t)len, fp);
-    buf[nread] = '\0';
-    fclose(fp);
-
+    /* Legacy pasta format — parse as before, then save will migrate to
+     * binary on the next save. */
+    char *buf = (char *)raw;
+    size_t nread = raw_len;
     PastaResult pr;
     PastaValue *root = pasta_parse(buf, nread, &pr);
     free(buf);
@@ -511,57 +642,63 @@ NOW_API int now_manifest_load(NowManifest *m, const char *path) {
     return 0;
 }
 
+/* Binary-format writers (little-endian). */
+static void write_u32(FILE *fp, uint32_t v) {
+    unsigned char b[4] = { (unsigned char)v, (unsigned char)(v >> 8),
+                            (unsigned char)(v >> 16), (unsigned char)(v >> 24) };
+    fwrite(b, 1, 4, fp);
+}
+static void write_i64(FILE *fp, long long v) {
+    uint64_t u = (uint64_t)v;
+    unsigned char b[8];
+    for (int i = 0; i < 8; i++) b[i] = (unsigned char)(u >> (i * 8));
+    fwrite(b, 1, 8, fp);
+}
+static void write_str(FILE *fp, const char *s) {
+    size_t len = s ? strlen(s) : 0;
+    write_u32(fp, (uint32_t)len);
+    if (len) fwrite(s, 1, len, fp);
+}
+
 NOW_API int now_manifest_save(const NowManifest *m, const char *path) {
-    /* Build Pasta tree */
-    PastaValue *root = pasta_new_map();
-    if (!root) return -1;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
 
-    if (m->link_flags_hash)
-        pasta_set(root, "link_flags_hash", pasta_new_string(m->link_flags_hash));
+    /* Header */
+    fwrite("NMNF", 1, 4, fp);
+    unsigned char hdr[4] = { 0x01, 0, 0, 0 };  /* version + 3 reserved */
+    fwrite(hdr, 1, 4, fp);
 
-    PastaValue *entries = pasta_new_array();
+    write_str(fp, m->link_flags_hash);
+    write_u32(fp, (uint32_t)m->count);
+
     for (size_t i = 0; i < m->count; i++) {
         const NowManifestEntry *e = &m->entries[i];
-        PastaValue *entry = pasta_new_map();
+        write_str(fp, e->source);
+        write_str(fp, e->object);
+        write_str(fp, e->source_hash);
+        write_str(fp, e->flags_hash);
+        write_i64(fp, e->mtime);
 
-        if (e->source)      pasta_set(entry, "source", pasta_new_string(e->source));
-        if (e->object)      pasta_set(entry, "object", pasta_new_string(e->object));
-        if (e->source_hash) pasta_set(entry, "source_hash", pasta_new_string(e->source_hash));
-        if (e->flags_hash)  pasta_set(entry, "flags_hash", pasta_new_string(e->flags_hash));
-        pasta_set(entry, "mtime", pasta_new_number((double)e->mtime));
-
-        if (e->dep_count > 0 && e->deps && e->dep_hashes) {
-            PastaValue *dep_arr = pasta_new_array();
-            for (size_t d = 0; d < e->dep_count; d++) {
-                PastaValue *dep = pasta_new_map();
-                pasta_set(dep, "path", pasta_new_string(e->deps[d]));
-                pasta_set(dep, "hash", pasta_new_string(e->dep_hashes[d]));
-                /* Always stat dep at save time to get current mtime */
-                {
-                    struct stat dep_st;
-                    if (stat(e->deps[d], &dep_st) == 0)
-                        pasta_set(dep, "mtime", pasta_new_number((double)(long long)dep_st.st_mtime));
-                }
-                pasta_push(dep_arr, dep);
+        size_t dc = (e->deps && e->dep_hashes) ? e->dep_count : 0;
+        write_u32(fp, (uint32_t)dc);
+        for (size_t d = 0; d < dc; d++) {
+            write_str(fp, e->deps[d]);
+            write_str(fp, e->dep_hashes[d]);
+            long long dep_mtime = (d < e->dep_mtime_count && e->dep_mtimes)
+                                ? e->dep_mtimes[d] : 0;
+            /* If we don't have a cached mtime, fall back to a fresh
+             * stat (legacy-pasta-loaded entries lack dep_mtimes). */
+            if (dep_mtime == 0 && e->deps[d]) {
+                struct stat dst;
+                if (stat(e->deps[d], &dst) == 0)
+                    dep_mtime = (long long)dst.st_mtime;
             }
-            pasta_set(entry, "deps", dep_arr);
+            write_i64(fp, dep_mtime);
         }
-
-        pasta_push(entries, entry);
     }
-    pasta_set(root, "entries", entries);
 
-    /* Write to file */
-    char *out = pasta_write(root, PASTA_PRETTY | PASTA_SORTED);
-    pasta_free(root);
-    if (!out) return -1;
-
-    FILE *fp = fopen(path, "wb");
-    if (!fp) { free(out); return -1; }
-    fputs(out, fp);
     fclose(fp);
-    free(out);
-
     return 0;
 }
 
