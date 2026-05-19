@@ -72,10 +72,11 @@ add_library(now
     lib/alforno/src/main/c/alforno_link.c
     lib/alforno/src/main/c/alforno_include.c
     lib/alforno/src/main/c/alforno_validate.c
-    # Apennines (vendored — fwatch, buf, compress, optionally full HTTP stack)
-    lib/apennines/src/main/c/fwatch.c
-    lib/apennines/src/main/c/buf.c
-    lib/apennines/src/main/c/compress.c
+    # Apennines (vendored — tier paths match canonical apennines repo
+    # one-to-one so refreshes are a literal cp -R)
+    lib/apennines/src/main/c/t3/fs/fwatch.c
+    lib/apennines/src/main/c/t1/buffer/buf.c
+    lib/apennines/src/main/c/t2/compress/compress.c
     # Basta (vendored sources — single-file packages with embedded blobs)
     lib/basta/src/main/c/basta_lexer.c
     lib/basta/src/main/c/basta_parser.c
@@ -85,29 +86,29 @@ add_library(now
 
 # Apennines HTTPS stack — always compiled (the only HTTPS backend since rc3).
 target_sources(now PRIVATE
-    lib/apennines/src/main/c/tcp.c
-    lib/apennines/src/main/c/tls.c
-    lib/apennines/src/main/c/dns.c
-    lib/apennines/src/main/c/http.c
-    lib/apennines/src/main/c/h2.c
-    lib/apennines/src/main/c/http_client.c
-    lib/apennines/src/main/c/https_client.c
-    lib/apennines/src/main/c/cipher.c
-    lib/apennines/src/main/c/ct.c
-    lib/apennines/src/main/c/ec.c
-    lib/apennines/src/main/c/ecdsa.c
-    lib/apennines/src/main/c/hash.c
-    lib/apennines/src/main/c/rsa.c
-    lib/apennines/src/main/c/secret.c
-    lib/apennines/src/main/c/x509.c
-    lib/apennines/src/main/c/asn1_der.c
-    lib/apennines/src/main/c/base.c
-    lib/apennines/src/main/c/pem.c
-    lib/apennines/src/main/c/entropy.c
-    lib/apennines/src/main/c/bigint.c
-    lib/apennines/src/main/c/pki.c
-    lib/apennines/src/main/c/threadpool.c
-    lib/apennines/src/main/c/addr.c
+    lib/apennines/src/main/c/t3/net/tcp.c
+    lib/apennines/src/main/c/t3/net/tls.c
+    lib/apennines/src/main/c/t3/net/dns.c
+    lib/apennines/src/main/c/t3/net/http.c
+    lib/apennines/src/main/c/t3/net/h2.c
+    lib/apennines/src/main/c/t4/net/http_client.c
+    lib/apennines/src/main/c/t4/net/https_client.c
+    lib/apennines/src/main/c/t2/crypto/cipher.c
+    lib/apennines/src/main/c/t2/crypto/ct.c
+    lib/apennines/src/main/c/t2/crypto/ec.c
+    lib/apennines/src/main/c/t2/crypto/ecdsa.c
+    lib/apennines/src/main/c/t2/crypto/hash.c
+    lib/apennines/src/main/c/t2/crypto/rsa.c
+    lib/apennines/src/main/c/t2/crypto/secret.c
+    lib/apennines/src/main/c/t2/crypto/x509.c
+    lib/apennines/src/main/c/t2/encoding/asn1_der.c
+    lib/apennines/src/main/c/t2/encoding/base.c
+    lib/apennines/src/main/c/t2/encoding/pem.c
+    lib/apennines/src/main/c/t1/random/entropy.c
+    lib/apennines/src/main/c/t2/math/bigint/bigint.c
+    lib/apennines/src/main/c/t3/crypto/pki.c
+    lib/apennines/src/main/c/t3/async/threadpool.c
+    lib/apennines/src/main/c/t2/net/addr.c
 )
 
 target_include_directories(now
