@@ -98,6 +98,14 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    # Use MinGW gcc, not MSVC. Apennines (vendored as lib/apennines)
+    # has #ifdef directives inside function-like macro argument lists
+    # (e.g. ADD128 in ecdsa.c) — legal under GCC/Clang, rejected by
+    # MSVC's preprocessor (C4002 + C2059). Apennines targets gcc/clang
+    # everywhere else in the ecosystem; we match that here.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,20 +113,22 @@ jobs:
 
       - name: Configure
         run: >
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G "MinGW Makefiles"
+          -DCMAKE_BUILD_TYPE=Release
           -DBUILD_SHARED_LIBS=OFF
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_SH=CMAKE_SH-NOTFOUND
 
       - name: Build
-        run: cmake --build build --config Release --verbose
+        run: cmake --build build --verbose -j
 
       - name: Test
-        run: .\build\bin\Release\now_test.exe
-        shell: pwsh
+        run: ./build/bin/now_test.exe
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: now-windows
           path: |
-            build/bin/Release/now.exe
-            build/bin/Release/now_test.exe
+            build/bin/now.exe
+            build/bin/now_test.exe

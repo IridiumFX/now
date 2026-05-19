@@ -30,12 +30,23 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Configure
+      - name: Configure (Windows — MinGW)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: >
+          cmake -B build -G "MinGW Makefiles"
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_SH=CMAKE_SH-NOTFOUND
+
+      - name: Configure (POSIX)
+        if: runner.os != 'Windows'
         run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug
         env:
           CC: ${{ matrix.cc }}
 
       - name: Build
+        shell: bash
         run: cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 
       - name: Test

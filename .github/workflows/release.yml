@@ -39,13 +39,25 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Configure
+      - name: Configure (Windows — MinGW)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: >
+          cmake -B build -G "MinGW Makefiles"
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_SH=CMAKE_SH-NOTFOUND
+          ${{ matrix.cmake_flags }}
+
+      - name: Configure (POSIX)
+        if: runner.os != 'Windows'
         run: cmake -B build -G "Unix Makefiles" ${{ matrix.cmake_flags }}
 
       - name: Build
+        shell: bash
         run: cmake --build build --target now_cli -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 
       - name: Test
+        shell: bash
         run: ./build/bin/now_test || build/bin/now_test.exe
         continue-on-error: false
 
