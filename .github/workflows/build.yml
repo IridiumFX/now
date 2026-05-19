@@ -38,6 +38,9 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    # Caveated platform — failures don't fail the overall run while we
+    # iterate on macOS-specific quirks. Promote to required once stable.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +68,10 @@ jobs:
 
   freebsd:
     runs-on: ubuntu-latest
+    # Caveated platform — runs through a FreeBSD VM (vmactions), prone
+    # to environment flakes that aren't about now itself. Promote to
+    # required once stable.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:

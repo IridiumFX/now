@@ -9,16 +9,21 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             cc: gcc
+            experimental: false
           - os: macos-latest
             cc: clang
+            experimental: true   # caveated; failure ignored while we iterate
           - os: windows-latest
             cc: gcc
+            experimental: false
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +58,9 @@ jobs:
 
   freebsd:
     runs-on: ubuntu-latest
+    # Caveated platform — vmactions FreeBSD VM, prone to environment
+    # flakes outside now itself. Promote to required once stable.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:

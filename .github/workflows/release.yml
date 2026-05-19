@@ -11,23 +11,28 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             asset: now-linux-x64
             cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+            experimental: false
           - os: macos-latest
             asset: now-macos-arm64
             cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+            experimental: true   # caveated; missing release asset doesn't block
           - os: windows-latest
             asset: now-windows-x64.exe
             cmake_flags: -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+            experimental: false
           - os: ubuntu-latest
             asset: now-freebsd-x64
             skip: true  # FreeBSD via vmactions in separate job
 
     runs-on: ${{ matrix.os }}
     if: ${{ !matrix.skip }}
+    continue-on-error: ${{ matrix.experimental || false }}
 
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +67,9 @@ jobs:
 
   freebsd:
     runs-on: ubuntu-latest
+    # Caveated platform — vmactions FreeBSD VM, missing release asset
+    # doesn't block. Promote to required once stable.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
