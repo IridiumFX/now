@@ -28,11 +28,12 @@ jobs:
             experimental: false
           - os: ubuntu-latest
             asset: now-freebsd-x64
+            experimental: false
             skip: true  # FreeBSD via vmactions in separate job
 
     runs-on: ${{ matrix.os }}
     if: ${{ !matrix.skip }}
-    continue-on-error: ${{ matrix.experimental || false }}
+    continue-on-error: ${{ matrix.experimental }}
 
     steps:
       - uses: actions/checkout@v4
