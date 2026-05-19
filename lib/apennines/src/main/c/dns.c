@@ -6,7 +6,9 @@
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
+    #ifdef _MSC_VER
+    #pragma comment(lib, "ws2_32.lib")  /* MSVC auto-link; GCC/MinGW must -lws2_32 */
+    #endif
     typedef SOCKET dns_sock_t;
     #define DNS_INVALID_SOCKET INVALID_SOCKET
     #define dns_close_socket closesocket

@@ -6,8 +6,22 @@
 #include "apennines/t2/crypto/rsa.h"
 #include "apennines/t1/buffer/buf.h"
 #include "apennines/t3/crypto/pki.h"
+#include "apennines/t2/encoding/pem.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
+
+/* Env-gated tracing. Set APENNINES_TLS_DEBUG=1 to print per-step
+ * progress to stderr. Cost is one getenv per invocation — only
+ * enable for debugging. */
+static int tls_debug_(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("APENNINES_TLS_DEBUG") ? 1 : 0;
+    return cached;
+}
+#define TLS_DBG(fmt, ...) \
+    do { if (tls_debug_()) fprintf(stderr, "[tls] " fmt "\n", ##__VA_ARGS__); } while (0)
 
 /* ================================================================
  *  Internal constants — TLS 1.3 (RFC 8446)
@@ -696,22 +710,34 @@ static unsigned long parse_encrypted_extensions(char **out_alpn,
     return 0;
 }
 
-/* Parse Certificate message. Extract first cert (leaf) in DER. */
-static unsigned long parse_certificate(u8 **out_cert, u64 *out_cert_len,
+/* Parse Certificate message. Extracts the FULL chain (leaf first,
+ * intermediates, root-or-trailing) as an array of (heap-owned DER
+ * bytes, length). Caller frees each `chain[i].data` plus the array.
+ *
+ * *out_chain is set to a malloc'd array of pki_cert with chain_len
+ * entries. The leaf is at index 0. Returns 0 even for an empty cert
+ * list (with *out_chain=NULL, *chain_len=0). */
+static unsigned long parse_certificate(pki_cert **out_chain, u64 *out_chain_len,
                                         const u8 *msg, u64 msg_len)
 {
     u64 pos;
     u32 hs_len;
-    u8 ctx_len;
+    u8  ctx_len;
     u32 certs_len;
     u32 cert_data_len;
+    u16 ext_len;
+    u64 list_end;
+    pki_cert *chain = NULL;
+    u64 chain_cap = 0;
+    u64 chain_n   = 0;
 
-    *out_cert = NULL;
-    *out_cert_len = 0;
+    *out_chain = NULL;
+    *out_chain_len = 0;
 
     if (msg_len < 4) return 1;
     if (msg[0] != HT_CERTIFICATE) return 2;
     hs_len = get_u24(msg + 1);
+    (void)hs_len;
     pos = 4;
 
     /* certificate_request_context */
@@ -722,18 +748,110 @@ static unsigned long parse_certificate(u8 **out_cert, u64 *out_cert_len,
     /* certificate_list length (3 bytes) */
     if (pos + 3 > msg_len) return 3;
     certs_len = get_u24(msg + pos); pos += 3;
+    if (certs_len == 0) return 0;
+    if (pos + certs_len > msg_len) return 3;
+    list_end = pos + certs_len;
 
-    if (certs_len == 0) return 0; /* empty cert list */
+    while (pos < list_end) {
+        /* CertificateEntry: cert_data(3-byte length-prefixed) + extensions(2-byte) */
+        if (pos + 3 > list_end) goto fail;
+        cert_data_len = get_u24(msg + pos); pos += 3;
+        if (pos + cert_data_len > list_end) goto fail;
 
-    /* First CertificateEntry: cert_data(3-byte length-prefixed) + extensions(2-byte) */
-    if (pos + 3 > msg_len) return 3;
-    cert_data_len = get_u24(msg + pos); pos += 3;
-    if (pos + cert_data_len > msg_len) return 3;
+        if (chain_n == chain_cap) {
+            u64 new_cap = chain_cap ? chain_cap * 2 : 4;
+            pki_cert *grown = (pki_cert *)realloc(chain,
+                                                  (size_t)(new_cap * sizeof(pki_cert)));
+            if (!grown) goto fail;
+            chain = grown;
+            chain_cap = new_cap;
+        }
+        chain[chain_n].data = (u8 *)malloc(cert_data_len);
+        if (!chain[chain_n].data) goto fail;
+        memcpy(chain[chain_n].data, msg + pos, cert_data_len);
+        chain[chain_n].len = cert_data_len;
+        chain_n++;
+        pos += cert_data_len;
 
-    *out_cert = (u8 *)malloc(cert_data_len);
-    if (!*out_cert) return 4;
-    memcpy(*out_cert, msg + pos, cert_data_len);
-    *out_cert_len = cert_data_len;
+        /* extensions(2-byte length) */
+        if (pos + 2 > list_end) goto fail;
+        ext_len = (u16)((msg[pos] << 8) | msg[pos + 1]);
+        pos += 2;
+        if (pos + ext_len > list_end) goto fail;
+        pos += ext_len;
+    }
+
+    *out_chain = chain;
+    *out_chain_len = chain_n;
+    return 0;
+
+fail:
+    {
+        u64 i;
+        for (i = 0; i < chain_n; i++) free(chain[i].data);
+        free(chain);
+    }
+    return 4;
+}
+
+/* Build a pki_store from a PEM CA bundle and verify the peer chain.
+ * Honours cfg->verify_mode:
+ *   TLS_VERIFY_NONE     — always accepts (no-op).
+ *   TLS_VERIFY_PEER     — fails only if CA data is present AND verify
+ *                          rejects. Missing CA data is not an error.
+ *   TLS_VERIFY_REQUIRED — fails on any verify rejection OR missing CA
+ *                          data (no way to verify → no trust).
+ * Returns 0 on accept, non-zero on reject. */
+static unsigned long verify_peer_chain(const tls_config *cfg,
+                                        const pki_cert *chain, u64 chain_len) {
+    pki_store *store = NULL;
+    pki_verify_result result;
+    const u8 *cursor;
+    u64 remaining;
+    u64 now_unix;
+    unsigned long rc;
+
+    if (cfg->verify_mode == TLS_VERIFY_NONE) return 0;
+
+    if (!cfg->ca_data || cfg->ca_len == 0) {
+        return (cfg->verify_mode == TLS_VERIFY_REQUIRED) ? 1 : 0;
+    }
+    if (chain_len == 0) return 2;
+
+    if (pki_store_create(&store) != 0) return 3;
+
+    /* Decode every PEM CERTIFICATE block from cfg->ca_data into
+     * the store. Other PEM label types (e.g. stray CRLs) are
+     * silently skipped — we care only about roots+intermediates. */
+    cursor    = cfg->ca_data;
+    remaining = cfg->ca_len;
+    for (;;) {
+        buf der;
+        char label[64] = {0};
+        pki_cert cert;
+        unsigned long drc;
+
+        if (buf_create(&der, 2048) != 0) { pki_store_destroy(store); return 4; }
+        drc = pem_decode_next(&der, label, sizeof(label), &cursor, &remaining);
+        if (drc != 0) {
+            buf_destroy(&der);
+            break;  /* no more blocks */
+        }
+        if (strcmp(label, "CERTIFICATE") == 0 && der.len > 0) {
+            cert.data = der.data;
+            cert.len  = der.len;
+            (void)pki_store_add_cert(store, &cert);
+            /* pki_store_add_cert copies; we still own buf backing mem. */
+        }
+        buf_destroy(&der);
+    }
+
+    now_unix = (u64)time(NULL);
+
+    rc = pki_store_verify(&result, store, chain, chain_len, now_unix);
+    pki_store_destroy(store);
+    if (rc != 0) return 5;
+    if (!result.valid) return 6;
     return 0;
 }
 
@@ -1041,29 +1159,67 @@ unsigned long tls_config_create(tls_config **out) {
     return 0;
 }
 
+/* Detect whether `data` starts with a PEM armour header "-----BEGIN".
+ * Leading whitespace is allowed (some files have a UTF-8 BOM or
+ * line breaks up front). */
+static int looks_like_pem_(const u8 *data, u64 len) {
+    u64 i = 0;
+    while (i < len && (data[i] == ' ' || data[i] == '\t'
+                        || data[i] == '\r' || data[i] == '\n')) i++;
+    if (len - i < 10) return 0;
+    return memcmp(data + i, "-----BEGIN", 10) == 0;
+}
+
+/* If `data` is PEM, decode the first block into heap DER and return
+ * those bytes; otherwise return a fresh copy of `data`. Caller frees
+ * *out_der via free(). Returns 0 on success. */
+static unsigned long pem_or_copy_(u8 **out_der, u64 *out_len,
+                                    const u8 *data, u64 len) {
+    if (looks_like_pem_(data, len)) {
+        buf der = {0};
+        char label[64] = {0};
+        if (buf_create(&der, 2048)) return 1;
+        if (pem_decode(&der, label, sizeof(label), data, len)) {
+            buf_destroy(&der);
+            return 2;
+        }
+        /* Copy der.data into a fresh malloc so caller can free() it
+         * independently of buf lifecycle. */
+        u8 *copy = (u8 *)malloc(der.len);
+        if (!copy) { buf_destroy(&der); return 3; }
+        memcpy(copy, der.data, der.len);
+        *out_der = copy;
+        *out_len = der.len;
+        buf_destroy(&der);
+        return 0;
+    }
+    u8 *copy = (u8 *)malloc(len);
+    if (!copy) return 4;
+    memcpy(copy, data, len);
+    *out_der = copy;
+    *out_len = len;
+    return 0;
+}
+
 unsigned long tls_config_set_cert(tls_config *cfg, const u8 *data, u64 len) {
-    u8 *copy;
     if (!cfg)  return 1;
     if (!data) return 2;
-    copy = (u8 *)malloc(len);
-    if (!copy) return 3;
-    memcpy(copy, data, len);
+    u8 *copy = NULL; u64 copy_len = 0;
+    if (pem_or_copy_(&copy, &copy_len, data, len)) return 3;
     free(cfg->cert_data);
     cfg->cert_data = copy;
-    cfg->cert_len  = len;
+    cfg->cert_len  = copy_len;
     return 0;
 }
 
 unsigned long tls_config_set_key(tls_config *cfg, const u8 *data, u64 len) {
-    u8 *copy;
     if (!cfg)  return 1;
     if (!data) return 2;
-    copy = (u8 *)malloc(len);
-    if (!copy) return 3;
-    memcpy(copy, data, len);
+    u8 *copy = NULL; u64 copy_len = 0;
+    if (pem_or_copy_(&copy, &copy_len, data, len)) return 3;
     free(cfg->key_data);
     cfg->key_data = copy;
-    cfg->key_len  = len;
+    cfg->key_len  = copy_len;
     return 0;
 }
 
@@ -1171,6 +1327,8 @@ unsigned long tls_conn_create_client(tls_conn **out, tcp_conn *tcp,
     u8 *hs_msg = NULL;
     u64 hs_msg_len;
     char *alpn_result = NULL;
+    pki_cert *peer_chain = NULL;
+    u64 peer_chain_len = 0;
     u8 *peer_cert = NULL;
     u64 peer_cert_len = 0;
     u8 th[32];
@@ -1195,10 +1353,12 @@ unsigned long tls_conn_create_client(tls_conn **out, tcp_conn *tcp,
     /* Step 1: Generate ephemeral X25519 keypair */
     rc = x25519_keygen(&eph);
     if (rc) goto fail;
+    TLS_DBG("client: eph keypair ok");
 
     /* Step 2: Build and send ClientHello */
     rc = build_client_hello(&ch_msg, &ch_len, tcp, &eph.pub, hostname, cfg);
     if (rc) goto fail;
+    TLS_DBG("client: ClientHello sent (%llu bytes)", (unsigned long long)ch_len);
 
     /* Init transcript with ClientHello */
     rc = transcript_init(&ts);
@@ -1209,12 +1369,16 @@ unsigned long tls_conn_create_client(tls_conn **out, tcp_conn *tcp,
 
     /* Step 3: Receive ServerHello */
     rc = recv_record(&rec_type, &sh_raw, &sh_raw_len, tcp);
-    if (rc) goto fail_ts;
+    if (rc) { TLS_DBG("client: recv_record(ServerHello) failed rc=%lu", rc); goto fail_ts; }
+    TLS_DBG("client: got record type=%d len=%llu",
+             (int)rec_type, (unsigned long long)sh_raw_len);
     if (rec_type != CT_HANDSHAKE) { free(sh_raw); rc = 4; goto fail_ts; }
 
     rc = parse_server_hello(&selected_cipher, server_pub, &negotiated_ver,
                              sh_raw, sh_raw_len);
-    if (rc) { free(sh_raw); rc = 4; goto fail_ts; }
+    if (rc) { TLS_DBG("client: parse_server_hello rc=%lu", rc); free(sh_raw); rc = 4; goto fail_ts; }
+    TLS_DBG("client: ServerHello parsed cipher=0x%04x ver=0x%04x",
+             (unsigned)selected_cipher, (unsigned)negotiated_ver);
     if (negotiated_ver != TLS_VERSION_13) { free(sh_raw); rc = 4; goto fail_ts; }
 
     /* Add ServerHello to transcript */
@@ -1273,10 +1437,33 @@ unsigned long tls_conn_create_client(tls_conn **out, tcp_conn *tcp,
     /* Step 8: Receive Certificate */
     rc = recv_handshake_msg(&hs_msg, &hs_msg_len, conn, &hs_buf);
     if (rc) { rc = 4; goto fail_ts; }
-    rc = parse_certificate(&peer_cert, &peer_cert_len, hs_msg, hs_msg_len);
+    rc = parse_certificate(&peer_chain, &peer_chain_len, hs_msg, hs_msg_len);
     transcript_append(&ts, hs_msg, hs_msg_len);
     free(hs_msg); hs_msg = NULL;
     if (rc) { rc = 4; goto fail_ts; }
+
+    /* Step 8b: CA chain verification (RFC 8446 §4.4.2.4). Honours
+     * cfg->verify_mode. If cfg sets REQUIRED and the chain doesn't
+     * verify against cfg->ca_data (or no CA data was supplied),
+     * abort the handshake with hatch 5 = cert verification failed. */
+    rc = verify_peer_chain(cfg, peer_chain, peer_chain_len);
+    if (rc != 0) { rc = 5; goto fail_ts; }
+
+    /* Promote the leaf (chain[0]) to conn->peer_cert for the existing
+     * tls_conn_peer_cert accessor. The rest of the chain was useful
+     * only for verify; free it now. */
+    if (peer_chain_len > 0) {
+        peer_cert     = peer_chain[0].data;
+        peer_cert_len = peer_chain[0].len;
+        /* Don't free peer_chain[0].data — transferred to peer_cert. */
+        {
+            u64 i;
+            for (i = 1; i < peer_chain_len; i++) free(peer_chain[i].data);
+        }
+    }
+    free(peer_chain);
+    peer_chain = NULL;
+    peer_chain_len = 0;
 
     /* Step 9: Receive CertificateVerify */
     rc = recv_handshake_msg(&hs_msg, &hs_msg_len, conn, &hs_buf);
@@ -1375,6 +1562,11 @@ fail:
     free(conn);
     free(alpn_result);
     free(peer_cert);
+    if (peer_chain) {
+        u64 i;
+        for (i = 0; i < peer_chain_len; i++) free(peer_chain[i].data);
+        free(peer_chain);
+    }
     return rc;
 }
 
@@ -1670,14 +1862,23 @@ static unsigned long build_certificate_verify(u8 *out, u64 *out_len,
 
     /* Try RSA first. Accepts raw PKCS#1 RSAPrivateKey DER, or the
      * unwrapped-from-PKCS#8 inner OCTET STRING content. */
+    TLS_DBG("certverify: rsa path: key_der=%p len=%llu is_pkcs8=%d client_supports_rsa=%d",
+             (const void *)rsa_key_der, (unsigned long long)rsa_key_der_len,
+             is_pkcs8_rsa,
+             client_supports_sigalg(client_sigalgs, client_sigalgs_len,
+                                     SIG_RSA_PSS_RSAE_SHA256));
     if (!chosen_alg && rsa_key_der && rsa_key_der_len > 0
         && client_supports_sigalg(client_sigalgs, client_sigalgs_len,
                                    SIG_RSA_PSS_RSAE_SHA256))
     {
         rsa_privkey rpriv;
-        if (rsa_privkey_import_der(&rpriv, rsa_key_der, rsa_key_der_len) == 0) {
+        unsigned long imp_rc = rsa_privkey_import_der(&rpriv, rsa_key_der, rsa_key_der_len);
+        TLS_DBG("certverify: rsa_privkey_import_der rc=%lu", imp_rc);
+        if (imp_rc == 0) {
             buf sig_b = {0};
             rc = rsa_sign_pss(&sig_b, &rpriv, content, content_len);
+            TLS_DBG("certverify: rsa_sign_pss rc=%lu sig_len=%llu",
+                     rc, (unsigned long long)sig_b.len);
             if (!rc && sig_b.len <= sizeof(sig_buf)) {
                 memcpy(sig_buf, sig_b.data, sig_b.len);
                 sig_len = sig_b.len;
@@ -1959,14 +2160,18 @@ unsigned long tls_conn_create_server(tls_conn **out, tcp_conn *tcp,
 
     /* Step 1: Receive ClientHello */
     rc = recv_record(&rec_type, &ch_raw, &ch_raw_len, tcp);
-    if (rc) goto fail;
+    if (rc) { TLS_DBG("server: recv_record(ClientHello) rc=%lu", rc); goto fail; }
+    TLS_DBG("server: got record type=%d len=%llu",
+             (int)rec_type, (unsigned long long)ch_raw_len);
     if (rec_type != CT_HANDSHAKE) { free(ch_raw); rc = 4; goto fail; }
 
     rc = parse_client_hello(session_id, &session_id_len, client_pub,
                              &alpn_match,
                              client_sigalgs, &client_sigalgs_len, 32,
                              cfg, ch_raw, ch_raw_len);
-    if (rc) { free(ch_raw); rc = 4; goto fail; }
+    if (rc) { TLS_DBG("server: parse_client_hello rc=%lu", rc); free(ch_raw); rc = 4; goto fail; }
+    TLS_DBG("server: ClientHello parsed, sigalgs=%llu",
+             (unsigned long long)client_sigalgs_len);
 
     /* Init transcript */
     rc = transcript_init(&ts);
@@ -2044,12 +2249,17 @@ unsigned long tls_conn_create_server(tls_conn **out, tcp_conn *tcp,
     transcript_append(&ts, enc_ext_buf, enc_ext_len);
 
     /* Step 7: Send Certificate */
-    if (cfg->cert_len + 64 > sizeof(cert_buf)) { rc = 4; goto fail_ts; }
+    if (cfg->cert_len + 64 > sizeof(cert_buf)) {
+        TLS_DBG("server: cert too large (%llu bytes)",
+                 (unsigned long long)cfg->cert_len);
+        rc = 4; goto fail_ts;
+    }
     rc = build_certificate(cert_buf, &cert_buf_len, cfg->cert_data, cfg->cert_len);
-    if (rc) { rc = 4; goto fail_ts; }
+    if (rc) { TLS_DBG("server: build_certificate rc=%lu", rc); rc = 4; goto fail_ts; }
     rc = send_encrypted_record(conn, CT_HANDSHAKE, cert_buf, cert_buf_len);
-    if (rc) { rc = 4; goto fail_ts; }
+    if (rc) { TLS_DBG("server: send Certificate rc=%lu", rc); rc = 4; goto fail_ts; }
     transcript_append(&ts, cert_buf, cert_buf_len);
+    TLS_DBG("server: Certificate sent (%llu bytes)", (unsigned long long)cert_buf_len);
 
     /* Step 8: Send CertificateVerify */
     rc = transcript_hash(th, &ts);
@@ -2057,7 +2267,8 @@ unsigned long tls_conn_create_server(tls_conn **out, tcp_conn *tcp,
     rc = build_certificate_verify(cv_buf, &cv_len,
                                    cfg->key_data, cfg->key_len, th,
                                    client_sigalgs, client_sigalgs_len);
-    if (rc) { rc = 4; goto fail_ts; }
+    if (rc) { TLS_DBG("server: build_certificate_verify rc=%lu", rc); rc = 4; goto fail_ts; }
+    TLS_DBG("server: CertVerify built (%llu bytes)", (unsigned long long)cv_len);
     rc = send_encrypted_record(conn, CT_HANDSHAKE, cv_buf, cv_len);
     if (rc) { rc = 4; goto fail_ts; }
     transcript_append(&ts, cv_buf, cv_len);

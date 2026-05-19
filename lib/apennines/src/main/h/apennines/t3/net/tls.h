@@ -10,6 +10,31 @@
  *
  *  Composes: cipher (AES-GCM, ChaCha20), hash (HMAC, HKDF),
  *  ec (X25519), ecdsa (P-256 ECDH), x509, pki, ct, secret
+ *
+ *  ---- Ownership / lifetime ----
+ *
+ *  tls_config — caller-owned. Created by tls_config_create, freed by
+ *    tls_config_destroy. The recommended deploy pattern is one shared
+ *    cfg per process / endpoint role (one for the listener, one for
+ *    the dialer), reused across many tls_conn instances. The cfg must
+ *    outlive every tls_conn that references it.
+ *    tls_conn_destroy does NOT free the cfg.
+ *
+ *  tcp_conn — caller-owned. tls_conn_create_{client,server} borrow the
+ *    tcp_conn pointer; the tls_conn drives reads/writes through it.
+ *    tls_conn_destroy does NOT close or free the tcp_conn — the caller
+ *    must do that with tcp_conn_destroy after tls_conn_destroy.
+ *
+ *  tls_conn — owned by the caller via the out-pointer; freed by
+ *    tls_conn_destroy. Internal handshake buffers + key material are
+ *    zeroed on destroy.
+ *
+ *  Threading: tls_config is created once and is read-only after setup
+ *    (set_cert / set_key / set_ca etc. should not race with handshakes
+ *    in flight). It's safe to share one cfg across N concurrent
+ *    tls_conn handshakes provided no thread mutates the cfg in the
+ *    meantime. Each tls_conn is single-threaded — do not call read /
+ *    write / shutdown on the same conn from multiple threads.
  * ================================================================ */
 
 #define TLS_VERSION_12  0x0303
@@ -50,6 +75,8 @@ APENNINES_API unsigned long tls_config_set_versions(tls_config *cfg,
 APENNINES_API unsigned long tls_config_set_verify_mode(tls_config *cfg,
                                                         int mode);
 
+/* Free the tls_config. Safe to call only after every tls_conn that
+ * referenced this cfg has been destroyed. */
 APENNINES_API unsigned long tls_config_destroy(tls_config *cfg);
 
 /* ---- Connection ---- */
@@ -93,6 +120,8 @@ APENNINES_API unsigned long tls_conn_version(u16 *out, tls_conn *conn);
 /* Send close_notify. */
 APENNINES_API unsigned long tls_conn_shutdown(tls_conn *conn);
 
+/* Free the tls_conn. Zeroes key material. Does NOT free the tcp_conn
+ * or tls_config — the caller retains ownership of both. */
 APENNINES_API unsigned long tls_conn_destroy(tls_conn *conn);
 
 #endif /* APENNINES_T3_TLS_H */

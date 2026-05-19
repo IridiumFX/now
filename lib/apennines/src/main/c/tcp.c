@@ -4,7 +4,9 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#ifdef _MSC_VER
+#pragma comment(lib, "ws2_32.lib")  /* MSVC auto-link; GCC/MinGW must -lws2_32 */
+#endif
 #define CLOSE_SOCKET closesocket
 typedef int socklen_t;
 #define INVALID_SOCK INVALID_SOCKET

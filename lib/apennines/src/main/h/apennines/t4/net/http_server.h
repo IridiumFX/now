@@ -34,6 +34,12 @@ APENNINES_API unsigned long http_server_set_max_connections(http_server *s, u32 
 APENNINES_API unsigned long http_server_set_max_body_size(http_server *s, u64 max);
 APENNINES_API unsigned long http_server_set_read_timeout(http_server *s, u64 ms);
 APENNINES_API unsigned long http_server_set_write_timeout(http_server *s, u64 ms);
+/* Runtime override of the worker-thread pool size. Must be called
+ * before http_server_listen — bails (hatch 3) if the server is
+ * already accepting. Replaces the default pool with one of the given
+ * size. Hatches: 1=null s, 2=zero num_threads, 3=already listening,
+ *               4=alloc failure */
+APENNINES_API unsigned long http_server_set_threads(http_server *s, u32 num_threads);
 APENNINES_API unsigned long http_server_listen(http_server *s, const char *addr,
                                                 u16 port);
 APENNINES_API unsigned long http_server_shutdown(http_server *s);
@@ -47,6 +53,13 @@ APENNINES_API unsigned long http_ctx_param(const char **out, http_ctx *ctx,
                                             const char *name);
 APENNINES_API unsigned long http_ctx_query(const char **out, http_ctx *ctx,
                                             const char *name);
+/* Return the raw query string (everything after '?', no decoding).
+ * Caller does NOT own the returned pointer — it stays valid for the
+ * lifetime of the request context. NULL when the request had no
+ * query string. Use for HMAC signature validation, raw passthrough,
+ * or anywhere the named-param accessor's decoding gets in the way.
+ * Hatches: 1=null out or null ctx */
+APENNINES_API unsigned long http_ctx_query_raw(const char **out, http_ctx *ctx);
 APENNINES_API unsigned long http_ctx_header(const char **out, http_ctx *ctx,
                                              const char *name);
 APENNINES_API unsigned long http_ctx_body(const u8 **out, u64 *out_len,

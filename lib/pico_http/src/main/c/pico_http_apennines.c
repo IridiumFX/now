@@ -17,6 +17,8 @@
 
 #include "pico_http.h"
 #include "apennines/t4/net/https_client.h"
+#include "apennines/t3/net/http.h"
+#include "apennines/t3/net/dns.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,30 +160,37 @@ PICO_API int pico_http_request(const char *method, const char *url,
     else if (strcmp(method, "HEAD") == 0) meth = HTTP_HEAD;
     else if (strcmp(method, "PATCH") == 0) meth = HTTP_PATCH;
 
+    /* DNS pre-flight: apennines' https_client_request collapses all
+     * transport failures (DNS / connect / TLS / send / recv) to a single
+     * generic code, so we resolve the host up front to surface DNS
+     * failures as PICO_ERR_DNS specifically. Costs one extra getaddrinfo
+     * per call; the OS resolver caches subsequent hits. */
+    {
+        http_url parsed;
+        unsigned long urc = http_url_parse(&parsed, url);
+        if (urc == 0 && parsed.host && parsed.host[0]) {
+            dns_response dnr;
+            memset(&dnr, 0, sizeof(dnr));
+            unsigned long drc = dns_query(&dnr, parsed.host);
+            dns_response_free(&dnr);
+            http_url_free(&parsed);
+            if (drc != 0) return PICO_ERR_DNS;
+        } else {
+            http_url_free(&parsed);
+        }
+    }
+
     https_response resp;
     memset(&resp, 0, sizeof(resp));
     unsigned long rc = https_client_request(&resp, c, meth, url,
                                              NULL, (const u8 *)body, (u64)body_len);
     if (rc != 0) {
         https_response_free(&resp);
-        /* Map apennines hatch codes to pico_http errors.
-         *   1-4      : URL/arg hatches from https_client_request itself
-         *   21/22/23 : DNS (query failed / no records / unknown rdata type)
-         *   24       : TCP connect failed
-         *   25       : TLS handshake
-         *   26-30    : request build
-         *   31       : serialize alloc
-         *   32       : send
-         *   33       : read
-         *   34       : parse
-         *   35+      : output build / alloc */
-        if      (rc >= 21 && rc <= 23) return PICO_ERR_DNS;
-        else if (rc == 24)             return PICO_ERR_CONNECT;
-        else if (rc == 25)             return PICO_ERR_TLS;
-        else if (rc == 32)             return PICO_ERR_SEND;
-        else if (rc == 33)             return PICO_ERR_RECV;
-        else if (rc == 34)             return PICO_ERR_PARSE;
-        else                           return PICO_ERR_CONNECT;
+        /* Post-DNS-preflight, https_client_request still flattens its
+         * transport-failure modes (connect / TLS / send / recv) to a
+         * single rc=5, so the best we can do is bucket everything that
+         * isn't an arg-validation hatch (1-4) as CONNECT. */
+        return PICO_ERR_CONNECT;
     }
 
     /* Copy response */

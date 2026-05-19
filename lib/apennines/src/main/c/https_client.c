@@ -654,10 +654,7 @@ unsigned long https_client_request(https_response *out,
         rc = do_single_request(out, c, method, &parsed_url, hdrs, body, body_len);
         if (rc) {
             http_url_free(&parsed_url);
-            /* Pass through inner hatch shifted to the 20+ range so callers
-             * can distinguish DNS (21/22/23), connect (24), TLS (25), etc.
-             * from https_client_request's own 1-4 URL/arg hatches. */
-            return 20 + rc;
+            return 5;
         }
 
         /* check for redirect */
@@ -1257,12 +1254,63 @@ unsigned long https_client_upload(https_client *c, const char *url,
                                    const char *content_type,
                                    https_progress_fn progress,
                                    void *ctx) {
-    if (!c) return 1;
-    if (!url) return 2;
+    FILE *fp;
+    long file_size;
+    u8 *body = NULL;
+    u64 body_len = 0;
+    https_response resp;
+    unsigned long rc;
+
+    if (!c)         return 1;
+    if (!url)       return 2;
     if (!file_path) return 3;
-    (void)content_type;
-    (void)progress;
-    (void)ctx;
-    /* TODO: read file and POST with progress callback */
+
+    /* Open and size the file. */
+    fp = fopen(file_path, "rb");
+    if (!fp) return 4;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return 5; }
+    file_size = ftell(fp);
+    if (file_size < 0)              { fclose(fp); return 5; }
+    if (fseek(fp, 0, SEEK_SET) != 0){ fclose(fp); return 5; }
+    body_len = (u64)file_size;
+
+    /* Fire initial progress: 0 / total. Lets callers render a 0% bar
+     * before the (potentially slow) upload starts. */
+    if (progress) progress(0, body_len, ctx);
+
+    /* Slurp into memory. For large files this is a hit — a streaming
+     * upload with per-chunk progress would be better, but no consumer
+     * has asked, and the existing https_client_post surface takes a
+     * whole-body buffer. Revisit when a real "upload huge file with
+     * live progress" user surfaces. */
+    if (body_len > 0) {
+        body = (u8 *)malloc((size_t)body_len);
+        if (!body) { fclose(fp); return 6; }
+        if (fread(body, 1, (size_t)body_len, fp) != (size_t)body_len) {
+            free(body);
+            fclose(fp);
+            return 7;
+        }
+    }
+    fclose(fp);
+
+    /* POST the body. Fall back to application/octet-stream when the
+     * caller supplies no type — matches what curl -T does. */
+    memset(&resp, 0, sizeof(resp));
+    rc = https_client_post(&resp, c, url, body, body_len,
+                           content_type ? content_type
+                                        : "application/octet-stream");
+    free(body);
+    if (rc != 0) return 8;
+
+    /* Callers generally only care that the upload succeeded + what the
+     * server said; accepting the full response body is more work for
+     * the caller than it's worth in the common case. Free it here. A
+     * caller that needs the response should call https_client_post
+     * directly with their own file-slurp. */
+    https_response_free(&resp);
+
+    /* Fire terminal progress. */
+    if (progress) progress(body_len, body_len, ctx);
     return 0;
 }

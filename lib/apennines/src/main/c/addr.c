@@ -5,7 +5,9 @@
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
+    #ifdef _MSC_VER
+    #pragma comment(lib, "ws2_32.lib")  /* MSVC auto-link; GCC/MinGW must -lws2_32 */
+    #endif
 
     static int addr_wsa_ensure_init(void) {
         static int done = 0;

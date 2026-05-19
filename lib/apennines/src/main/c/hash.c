@@ -764,6 +764,16 @@ static unsigned long pbkdf2_hmac_sha256(u8 *out, u64 out_len,
     return 0;
 }
 
+unsigned long pbkdf2_hmac_sha256_derive(u8 *out, u64 out_len,
+                                         const u8 *password, u64 password_len,
+                                         const u8 *salt, u64 salt_len,
+                                         u64 iterations) {
+    return pbkdf2_hmac_sha256(out, out_len,
+                                password, password_len,
+                                salt, salt_len,
+                                iterations);
+}
+
 /* ================================================================
  * scrypt (RFC 7914)
  * ================================================================ */

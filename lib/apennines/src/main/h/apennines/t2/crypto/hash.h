@@ -75,4 +75,18 @@ APENNINES_API unsigned long scrypt_derive(u8 *out, u64 out_len,
                                           const u8 *salt, u64 salt_len,
                                           u64 N, u32 r, u32 p);
 
+/* ---- PBKDF2-HMAC-SHA256 (RFC 2898) ----
+ * Password-based key derivation. Used by SCRAM-SHA-256.
+ *   out, out_len:    derived key (caller-allocated)
+ *   password:        user password (any length)
+ *   salt:            salt (recommended >= 16 bytes)
+ *   iterations:      RFC 2898 iteration count (must be > 0)
+ * Hatches: 1=iterations zero, 2-5=internal hmac failure */
+APENNINES_API unsigned long pbkdf2_hmac_sha256_derive(u8 *out, u64 out_len,
+                                                      const u8 *password,
+                                                      u64 password_len,
+                                                      const u8 *salt,
+                                                      u64 salt_len,
+                                                      u64 iterations);
+
 #endif /* APENNINES_T2_CRYPTO_HASH_H */

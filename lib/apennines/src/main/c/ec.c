@@ -1019,14 +1019,17 @@ static void sc_muladd(u8 out[32], const u8 *a, const u8 *b, const u8 *c) {
 
 /* Check if scalar s < l. Returns 1 if valid (s < l), 0 otherwise. */
 static int sc_is_canonical(const u8 s[32]) {
-    /* s must be < l. Check in constant time by comparing from MSB. */
+    /* Multi-byte subtract s - l in little-endian order; a final
+     * borrow means s < l (canonical). Borrow propagates LSB->MSB —
+     * iterating the other direction is the standard "naive" bug
+     * that passes for most random inputs but fails when the top
+     * byte borrows while lower bytes wouldn't. */
     int i;
     unsigned int borrow = 0;
-    for (i = 31; i >= 0; i--) {
+    for (i = 0; i < 32; i++) {
         unsigned int diff = (unsigned int)s[i] - (unsigned int)EC_L[i] - borrow;
         borrow = (diff >> 8) & 1;
     }
-    /* If borrow == 1, s < l */
     return (int)borrow;
 }
 
