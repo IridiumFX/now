@@ -136,6 +136,20 @@ if(WIN32)
 endif()
 
 target_compile_definitions(now PRIVATE PICO_HTTP_APENNINES)
+
+# POSIX feature-test macros for Linux/glibc. With CMAKE_C_EXTENSIONS OFF
+# (i.e. -std=c11 not -std=gnu11), glibc hides clock_gettime, strdup,
+# setenv, realpath, struct addrinfo, etc. behind these macros.
+# _DEFAULT_SOURCE additionally re-enables BSD-isms removed from strict
+# POSIX (usleep, useconds_t, etc.). Macros are harmless on macOS/BSD
+# but unnecessary; gate on Linux to keep darwin headers permissive.
+# Covers both now's own sources and vendored apennines/basta .c files
+# compiled into the same target.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(NOW_LINUX_POSIX_DEFS _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    target_compile_definitions(now PRIVATE ${NOW_LINUX_POSIX_DEFS})
+endif()
+
 if(WIN32)
     target_link_libraries(now PRIVATE bcrypt)
 endif()
@@ -172,6 +186,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_executable(now_cli components/cli/app/src/main/c/main.c)
 set_target_properties(now_cli PROPERTIES OUTPUT_NAME now)
 target_link_libraries(now_cli PRIVATE now)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(now_cli PRIVATE ${NOW_LINUX_POSIX_DEFS})
+endif()
 target_include_directories(now_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/src/main/h/internal
     ${CMAKE_SOURCE_DIR}/lib/alforno/src/main/h
@@ -210,6 +227,9 @@ if(NOW_BUILD_TESTS)
     target_compile_definitions(now_test PRIVATE
         NOW_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/src/test/resources"
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(now_test PRIVATE ${NOW_LINUX_POSIX_DEFS})
+    endif()
 endif()
 
 # ---- Install rules ----
