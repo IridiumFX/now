@@ -146,6 +146,35 @@ typedef struct {
     NowStrArray classpath;   /* additional classpath entries */
 } NowJava;
 
+/* Platform tag dictionary (§11.x) — path-based platform variants.
+ *
+ * When set, a directory segment under sources.dir whose name (after
+ * alias resolution) appears in `tags` is treated as a *platform gate*:
+ * the subtree only compiles if the tag is in the build's active set.
+ * Nested tags compose with AND (c/amiga/os4/foo.c needs both).
+ * Directories whose name is not in `tags` are ordinary subdirs.
+ *
+ * Aliases canonicalize synonyms (darwin → macos, win32 → windows) so
+ * the dict itself only contains canonical names.
+ *
+ * Empty dict (no `arch:` section in now.pasta) → no gating, every
+ * subdir is ordinary. */
+typedef struct {
+    NowStrArray tags;          /* canonical platform tokens */
+    NowStrArray alias_keys;    /* parallel to alias_values; alias[i] -> values[i] */
+    NowStrArray alias_values;
+} NowArchDict;
+
+/* Canonicalize `name` through the alias map. Returns `name` itself
+ * (no alias) or a pointer into the dict's alias_values (stable for
+ * the dict's lifetime). */
+NOW_API const char *now_arch_dict_resolve(const NowArchDict *d, const char *name);
+
+/* Returns 1 if `name` (after alias resolution) is a known platform
+ * tag — i.e. directories with this name act as platform gates.
+ * Returns 0 if the dict is empty or `name` isn't listed. */
+NOW_API int now_arch_dict_is_gate(const NowArchDict *d, const char *name);
+
 /* The full Project Object Model (matches forward decl in now.h) */
 struct NowProject {
     /* Identity (§1.1) */
@@ -189,6 +218,9 @@ struct NowProject {
 
     /* Java-specific (when langs includes "java") */
     NowJava java;
+
+    /* Platform tag dictionary (§11.x) */
+    NowArchDict arch;
 
     /* Components — your own submodules (full control) */
     NowStrArray components;

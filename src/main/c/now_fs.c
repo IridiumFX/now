@@ -2,6 +2,8 @@
  * now_fs.c — Filesystem utilities
  */
 #include "now_fs.h"
+#include "now_pom.h"   /* NowArchDict, now_arch_dict_is_gate */
+#include "now_arch.h"  /* NowTagSet, now_tagset_has */
 
 #include <stdlib.h>
 #include <string.h>
@@ -265,11 +267,29 @@ static long long dir_mtime_hires(const char *path) {
 #endif
 }
 
+/* When dict + active are non-NULL, subdirs whose basename (after
+ * alias resolution) is in `dict->tags` are platform-gated: descended
+ * only if the tag is also in `active`. Subdirs not in the dict are
+ * traversed unconditionally. */
+static int dir_gate_passes(const NowArchDict *dict, const NowTagSet *active,
+                            const char *name) {
+    if (!dict || !active) return 1;
+    if (!now_arch_dict_is_gate(dict, name)) return 1;
+    const char *canon = now_arch_dict_resolve(dict, name);
+    return now_tagset_has(active, canon);
+}
+
 /* Walk a directory using the global dirwalk cache if available.
  * Writes matching source files to `out` (recursively through subdirs).
- * Updates the cache on miss/mtime mismatch. */
+ * Updates the cache on miss/mtime mismatch.
+ *
+ * dict + active are the optional platform-gate context. Passing
+ * NULL/NULL disables gating (every subdir is descended). */
 static int discover_recursive(const char *basedir, const char *rel_dir,
-                               const char **exts, NowFileList *out) {
+                               const char **exts,
+                               const NowArchDict *dict,
+                               const NowTagSet *active,
+                               NowFileList *out) {
     char *abs_dir;
     if (rel_dir && *rel_dir)
         abs_dir = now_path_join(basedir, rel_dir);
@@ -299,7 +319,9 @@ static int discover_recursive(const char *basedir, const char *rel_dir,
                 : strdup(name);
             if (!rel_path) continue;
             if (cached->is_dir[i]) {
-                discover_recursive(basedir, rel_path, exts, out);
+                if (dir_gate_passes(dict, active, name))
+                    discover_recursive(basedir, rel_path, exts,
+                                       dict, active, out);
             } else if (ext_matches(name, exts)) {
                 now_filelist_push(out, rel_path);
             }
@@ -366,7 +388,9 @@ static int discover_recursive(const char *basedir, const char *rel_dir,
             : strdup(entries_list[i]);
         if (!rel_path) continue;
         if (isdir_list[i]) {
-            discover_recursive(basedir, rel_path, exts, out);
+            if (dir_gate_passes(dict, active, entries_list[i]))
+                discover_recursive(basedir, rel_path, exts,
+                                   dict, active, out);
         } else if (ext_matches(entries_list[i], exts)) {
             now_filelist_push(out, rel_path);
         }
@@ -391,7 +415,23 @@ NOW_API int now_discover_sources(const char *basedir, const char *dir,
     char *full = now_path_join(basedir, dir);
     if (!now_is_dir(full)) { free(full); return -1; }
     free(full);
-    return discover_recursive(basedir, dir, exts, out);
+    return discover_recursive(basedir, dir, exts, NULL, NULL, out);
+}
+
+NOW_API int now_discover_sources_filtered(const char *basedir, const char *dir,
+                                           const char **exts,
+                                           const NowProject *project,
+                                           const NowTagSet *active,
+                                           NowFileList *out) {
+    char *full = now_path_join(basedir, dir);
+    if (!now_is_dir(full)) { free(full); return -1; }
+    free(full);
+    const NowArchDict *dict = NULL;
+    /* No gating if either the project has no dict or no active set
+     * was supplied — falls back to the unfiltered walk. */
+    if (project && project->arch.tags.count > 0 && active)
+        dict = &project->arch;
+    return discover_recursive(basedir, dir, exts, dict, active, out);
 }
 
 NOW_API int now_file_copy(const char *src, const char *dst) {

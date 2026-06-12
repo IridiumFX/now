@@ -3434,6 +3434,240 @@ static void test_triple_is_native(void) {
     PASS();
 }
 
+/* ---- Path-based platform variants (arch.tags + path gating) ---- */
+
+static const char *ARCH_POM =
+    "{ group: \"org.test\", artifact: \"archproj\", version: \"1.0\","
+    "  langs: [\"c\"],"
+    "  arch: {"
+    "    tags: [\"linux\", \"windows\", \"amiga\", \"os3\", \"os4\","
+    "           \"amd64\", \"arm64\"],"
+    "    aliases: { darwin: \"macos\", win32: \"windows\" }"
+    "  } }";
+
+static void test_arch_parse_tags(void) {
+    TEST("arch: parse tags from now.pasta");
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((int)p->arch.tags.count, 7);
+    ASSERT_STR(p->arch.tags.items[0], "linux");
+    ASSERT_STR(p->arch.tags.items[2], "amiga");
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_parse_aliases(void) {
+    TEST("arch: parse aliases as key:value map");
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((int)p->arch.alias_keys.count, 2);
+    ASSERT_STR(now_arch_dict_resolve(&p->arch, "darwin"), "macos");
+    ASSERT_STR(now_arch_dict_resolve(&p->arch, "win32"), "windows");
+    /* Non-alias passes through unchanged */
+    ASSERT_STR(now_arch_dict_resolve(&p->arch, "linux"), "linux");
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_is_gate(void) {
+    TEST("arch: is_gate distinguishes tags from non-tags");
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(now_arch_dict_is_gate(&p->arch, "linux"), 1);
+    ASSERT_EQ(now_arch_dict_is_gate(&p->arch, "amiga"), 1);
+    /* Aliases resolve before lookup, so "darwin" should be treated as macos
+     * — but macos isn't in the tag list here, so still 0. */
+    ASSERT_EQ(now_arch_dict_is_gate(&p->arch, "darwin"), 0);
+    /* win32 → windows, which IS a tag */
+    ASSERT_EQ(now_arch_dict_is_gate(&p->arch, "win32"), 1);
+    /* Random subdir name is not a gate */
+    ASSERT_EQ(now_arch_dict_is_gate(&p->arch, "utils"), 0);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_active_tags_from_triple(void) {
+    TEST("arch: active tag set derived from triple");
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    NowTriple t;
+    now_triple_parse(&t, "linux:amd64:gnu");
+    NowTagSet active;
+    now_arch_active_tags(&t, p, NULL, 0, &active);
+    ASSERT_EQ(now_tagset_has(&active, "linux"), 1);
+    ASSERT_EQ(now_tagset_has(&active, "amd64"), 1);
+    ASSERT_EQ(now_tagset_has(&active, "gnu"), 1);
+    ASSERT_EQ(now_tagset_has(&active, "windows"), 0);
+    now_tagset_free(&active);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_active_tags_with_user(void) {
+    TEST("arch: user tags + alias canonicalization");
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    NowTriple t;
+    now_triple_parse(&t, "windows:amd64:mingw");
+    /* User passes "os4" (sub-platform invisible in triple) and "darwin"
+     * which is an alias and should canonicalize to macos. */
+    const char *user[] = { "os4", "darwin" };
+    NowTagSet active;
+    now_arch_active_tags(&t, p, user, 2, &active);
+    ASSERT_EQ(now_tagset_has(&active, "windows"), 1);
+    ASSERT_EQ(now_tagset_has(&active, "os4"), 1);
+    ASSERT_EQ(now_tagset_has(&active, "macos"), 1);  /* via darwin alias */
+    ASSERT_EQ(now_tagset_has(&active, "darwin"), 0); /* alias was resolved */
+    now_tagset_free(&active);
+    now_project_free(p);
+    PASS();
+}
+
+/* Build a synthetic source tree:
+ *   <root>/c/common.c
+ *   <root>/c/linux/linux_only.c
+ *   <root>/c/windows/win_only.c
+ *   <root>/c/amiga/os4/aos4_only.c
+ *   <root>/c/utils/helper.c   (non-gated subdir)
+ */
+static int write_empty(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    fputs("/* test stub */\n", f);
+    fclose(f);
+    return 0;
+}
+
+static int build_arch_tree(const char *root) {
+    char p[512];
+    snprintf(p, sizeof(p), "%s/c", root); now_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/c/linux", root); now_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/c/windows", root); now_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/c/amiga/os4", root); now_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/c/utils", root); now_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/c/common.c", root); if (write_empty(p)) return -1;
+    snprintf(p, sizeof(p), "%s/c/linux/linux_only.c", root); if (write_empty(p)) return -1;
+    snprintf(p, sizeof(p), "%s/c/windows/win_only.c", root); if (write_empty(p)) return -1;
+    snprintf(p, sizeof(p), "%s/c/amiga/os4/aos4_only.c", root); if (write_empty(p)) return -1;
+    snprintf(p, sizeof(p), "%s/c/utils/helper.c", root); if (write_empty(p)) return -1;
+    return 0;
+}
+
+static int filelist_has_basename(const NowFileList *fl, const char *base) {
+    for (size_t i = 0; i < fl->count; i++) {
+        const char *p = fl->paths[i];
+        const char *bn = now_path_basename(p);
+        if (bn && strcmp(bn, base) == 0) return 1;
+    }
+    return 0;
+}
+
+static void test_arch_gate_skips_nonmatching(void) {
+    TEST("arch: gating skips subdirs not in active set");
+    char root[512];
+    snprintf(root, sizeof(root), "%s/arch_tree", NOW_TEST_RESOURCES);
+    if (build_arch_tree(root) != 0) { FAIL("setup failed"); return; }
+
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    NowTriple t;
+    now_triple_parse(&t, "linux:amd64:gnu");
+    NowTagSet active;
+    now_arch_active_tags(&t, p, NULL, 0, &active);
+
+    NowFileList fl;
+    now_filelist_init(&fl);
+    const char *exts[] = { ".c", NULL };
+    now_discover_sources_filtered(root, "c", exts, p, &active, &fl);
+
+    ASSERT_EQ(filelist_has_basename(&fl, "common.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "linux_only.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "helper.c"), 1);   /* utils/ not a gate */
+    ASSERT_EQ(filelist_has_basename(&fl, "win_only.c"), 0); /* skipped */
+    ASSERT_EQ(filelist_has_basename(&fl, "aos4_only.c"), 0);/* amiga/ skipped */
+
+    now_filelist_free(&fl);
+    now_tagset_free(&active);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_gate_nested_and(void) {
+    TEST("arch: nested gates compose with AND (amiga + os4)");
+    char root[512];
+    snprintf(root, sizeof(root), "%s/arch_tree", NOW_TEST_RESOURCES);
+    /* tree already built by previous test, but rebuild is idempotent */
+    if (build_arch_tree(root) != 0) { FAIL("setup failed"); return; }
+
+    NowResult res;
+    NowProject *p = now_project_load_string(ARCH_POM, strlen(ARCH_POM), &res);
+    NowTriple t;
+    /* Triple says amiga; user adds os4 sub-platform */
+    now_triple_parse(&t, "amiga:m68k:none");
+    const char *user[] = { "os4" };
+    NowTagSet active;
+    now_arch_active_tags(&t, p, user, 1, &active);
+
+    NowFileList fl;
+    now_filelist_init(&fl);
+    const char *exts[] = { ".c", NULL };
+    now_discover_sources_filtered(root, "c", exts, p, &active, &fl);
+
+    ASSERT_EQ(filelist_has_basename(&fl, "aos4_only.c"), 1); /* both tags active */
+    ASSERT_EQ(filelist_has_basename(&fl, "linux_only.c"), 0);
+    ASSERT_EQ(filelist_has_basename(&fl, "win_only.c"), 0);
+
+    now_filelist_free(&fl);
+    now_tagset_free(&active);
+
+    /* Same tree, but active set is amiga WITHOUT os4 — the os4 subdir
+     * should be skipped even though amiga matches. */
+    now_arch_active_tags(&t, p, NULL, 0, &active);
+    now_filelist_init(&fl);
+    now_discover_sources_filtered(root, "c", exts, p, &active, &fl);
+    ASSERT_EQ(filelist_has_basename(&fl, "aos4_only.c"), 0);
+    now_filelist_free(&fl);
+    now_tagset_free(&active);
+    now_project_free(p);
+    PASS();
+}
+
+static void test_arch_gate_empty_dict_is_passthrough(void) {
+    TEST("arch: empty dict = no gating, same as unfiltered walk");
+    char root[512];
+    snprintf(root, sizeof(root), "%s/arch_tree", NOW_TEST_RESOURCES);
+    if (build_arch_tree(root) != 0) { FAIL("setup failed"); return; }
+
+    /* Project with no arch section at all */
+    const char *pom = "{ group: \"org.test\", artifact: \"a\", version: \"1\","
+                      "  langs: [\"c\"] }";
+    NowResult res;
+    NowProject *p = now_project_load_string(pom, strlen(pom), &res);
+
+    NowTagSet active;
+    now_tagset_init(&active);  /* empty active set, doesn't matter */
+
+    NowFileList fl;
+    now_filelist_init(&fl);
+    const char *exts[] = { ".c", NULL };
+    now_discover_sources_filtered(root, "c", exts, p, &active, &fl);
+
+    /* All 5 .c files should be present since no gating applies */
+    ASSERT_EQ(filelist_has_basename(&fl, "common.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "linux_only.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "win_only.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "aos4_only.c"), 1);
+    ASSERT_EQ(filelist_has_basename(&fl, "helper.c"), 1);
+
+    now_filelist_free(&fl);
+    now_tagset_free(&active);
+    now_project_free(p);
+    PASS();
+}
+
 /* ---- C++20 Module Pre-scan ---- */
 
 /* Helper: write a temporary file for module scanning */
@@ -6466,6 +6700,16 @@ int main(void) {
     test_triple_match_wildcard();
     test_triple_host_detect();
     test_triple_is_native();
+
+    printf("\n  Arch tags / path-gated discovery:\n");
+    test_arch_parse_tags();
+    test_arch_parse_aliases();
+    test_arch_is_gate();
+    test_arch_active_tags_from_triple();
+    test_arch_active_tags_with_user();
+    test_arch_gate_skips_nonmatching();
+    test_arch_gate_nested_and();
+    test_arch_gate_empty_dict_is_passthrough();
 
     printf("\n  C++20 Modules:\n");
     test_module_scan_interface();

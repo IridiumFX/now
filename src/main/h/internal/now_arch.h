@@ -8,6 +8,7 @@
 #define NOW_ARCH_H
 
 #include "now.h"
+#include "now_pom.h"  /* NowStrArray, NowArchDict, NowProject */
 
 /* Maximum length of a triple component */
 #define NOW_TRIPLE_MAX 64
@@ -47,5 +48,35 @@ NOW_API const NowTriple *now_host_triple_parsed(void);
 
 /* Returns 1 if target == host (native build), 0 if cross. */
 NOW_API int now_triple_is_native(const NowTriple *target);
+
+/* ---- Active tag set (path-based platform variants) ----
+ *
+ * The active tag set drives the now_fs source-discovery gate: a
+ * directory whose name (resolved through arch.aliases) is in the
+ * project's arch.tags compiles iff that tag is also in the active
+ * set. Active set = triple os/arch/variant + user-supplied extras,
+ * each canonicalized through the project's aliases.
+ *
+ * A NowTagSet is just a NowStrArray with deduplicating semantics on
+ * add — small lookups, linear search is fine (n typically <8). */
+typedef NowStrArray NowTagSet;
+
+NOW_API void now_tagset_init(NowTagSet *s);
+NOW_API void now_tagset_free(NowTagSet *s);
+NOW_API int  now_tagset_has(const NowTagSet *s, const char *tag);
+NOW_API int  now_tagset_add(NowTagSet *s, const char *tag);
+
+/* Populate `out` with the active tags for this build.
+ *   target    — target triple (os, arch, variant become tags)
+ *   project   — used for arch.aliases canonicalization; may be NULL
+ *               (then no alias resolution is applied)
+ *   user_tags — extra tags from CLI (e.g. --platform-tag os4); may
+ *               be NULL/0
+ * Empty triple components are skipped. Duplicates are deduped. */
+NOW_API int now_arch_active_tags(const NowTriple *target,
+                                  const NowProject *project,
+                                  const char *const *user_tags,
+                                  size_t user_count,
+                                  NowTagSet *out);
 
 #endif /* NOW_ARCH_H */

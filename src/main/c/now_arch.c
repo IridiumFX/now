@@ -173,3 +173,54 @@ NOW_API int now_triple_is_native(const NowTriple *target) {
     if (!target) return 1;
     return now_triple_cmp(target, now_host_triple_parsed()) == 0;
 }
+
+/* ---- Active tag set ---- */
+
+NOW_API void now_tagset_init(NowTagSet *s) {
+    now_strarray_init((NowStrArray *)s);
+}
+
+NOW_API void now_tagset_free(NowTagSet *s) {
+    now_strarray_free((NowStrArray *)s);
+}
+
+NOW_API int now_tagset_has(const NowTagSet *s, const char *tag) {
+    if (!s || !tag) return 0;
+    for (size_t i = 0; i < s->count; i++) {
+        if (strcmp(s->items[i], tag) == 0) return 1;
+    }
+    return 0;
+}
+
+NOW_API int now_tagset_add(NowTagSet *s, const char *tag) {
+    if (!s || !tag || !*tag) return 0;
+    if (now_tagset_has(s, tag)) return 0;
+    return now_strarray_push((NowStrArray *)s, tag);
+}
+
+NOW_API int now_arch_active_tags(const NowTriple *target,
+                                  const NowProject *project,
+                                  const char *const *user_tags,
+                                  size_t user_count,
+                                  NowTagSet *out) {
+    if (!out) return -1;
+    now_tagset_init(out);
+    const NowArchDict *dict = project ? &project->arch : NULL;
+
+    if (target) {
+        const char *fields[3] = { target->os, target->arch, target->variant };
+        for (int i = 0; i < 3; i++) {
+            if (!fields[i] || !*fields[i]) continue;
+            const char *canon = dict ? now_arch_dict_resolve(dict, fields[i])
+                                     : fields[i];
+            now_tagset_add(out, canon);
+        }
+    }
+    for (size_t i = 0; i < user_count; i++) {
+        if (!user_tags[i] || !*user_tags[i]) continue;
+        const char *canon = dict ? now_arch_dict_resolve(dict, user_tags[i])
+                                 : user_tags[i];
+        now_tagset_add(out, canon);
+    }
+    return 0;
+}

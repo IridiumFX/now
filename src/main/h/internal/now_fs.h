@@ -45,6 +45,19 @@ NOW_API void now_filelist_free(NowFileList *fl);
 NOW_API int now_discover_sources(const char *basedir, const char *dir,
                                   const char **exts, NowFileList *out);
 
+#include "now_pom.h"  /* NowProject + NowStrArray (NowTagSet alias) */
+
+/* Platform-gated source discovery: walks dir like now_discover_sources
+ * but skips subdirs whose name (after alias resolution via
+ * project->arch.aliases) is in project->arch.tags unless the tag is
+ * in `active`. Passing project=NULL, active=NULL, or an empty dict
+ * makes this identical to now_discover_sources. */
+NOW_API int now_discover_sources_filtered(const char *basedir, const char *dir,
+                                           const char **exts,
+                                           const NowProject *project,
+                                           const NowStrArray *active,
+                                           NowFileList *out);
+
 /* Copy a file from src to dst. Returns 0 on success, -1 on error. */
 NOW_API int now_file_copy(const char *src, const char *dst);
 

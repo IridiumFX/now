@@ -375,6 +375,39 @@ static void load_output(NowOutput *dst, const PastaValue *src) {
     dst->dir  = dup_map_str(src, "dir");
 }
 
+static void load_arch(NowArchDict *dst, const PastaValue *src) {
+    if (!src || pasta_type(src) != PASTA_MAP) return;
+    load_strarray(&dst->tags, pasta_map_get(src, "tags"));
+    const PastaValue *aliases = pasta_map_get(src, "aliases");
+    if (!aliases || pasta_type(aliases) != PASTA_MAP) return;
+    size_t n = pasta_count(aliases);
+    for (size_t i = 0; i < n; i++) {
+        const char *k = pasta_map_key(aliases, i);
+        const PastaValue *v = pasta_map_value(aliases, i);
+        if (!k || !v || pasta_type(v) != PASTA_STRING) continue;
+        now_strarray_push(&dst->alias_keys, k);
+        now_strarray_push(&dst->alias_values, pasta_get_string(v));
+    }
+}
+
+NOW_API const char *now_arch_dict_resolve(const NowArchDict *d, const char *name) {
+    if (!d || !name) return name;
+    for (size_t i = 0; i < d->alias_keys.count; i++) {
+        if (strcmp(d->alias_keys.items[i], name) == 0)
+            return d->alias_values.items[i];
+    }
+    return name;
+}
+
+NOW_API int now_arch_dict_is_gate(const NowArchDict *d, const char *name) {
+    if (!d || !name || d->tags.count == 0) return 0;
+    const char *canon = now_arch_dict_resolve(d, name);
+    for (size_t i = 0; i < d->tags.count; i++) {
+        if (strcmp(d->tags.items[i], canon) == 0) return 1;
+    }
+    return 0;
+}
+
 static void load_deps(NowDepArray *dst, const PastaValue *arr) {
     if (!arr || pasta_type(arr) != PASTA_ARRAY) return;
     size_t n = pasta_count(arr);
@@ -549,6 +582,9 @@ NOW_API NowProject *now_project_new(void) {
     now_strarray_init(&p->vendored);
     now_strarray_init(&p->modules);
     now_strarray_init(&p->private_groups);
+    now_strarray_init(&p->arch.tags);
+    now_strarray_init(&p->arch.alias_keys);
+    now_strarray_init(&p->arch.alias_values);
     return p;
 }
 
@@ -581,6 +617,9 @@ NOW_API void now_project_free(NowProject *p) {
     free(p->java.main_class);
     free(p->java.encoding);
     now_strarray_free(&p->java.classpath);
+    now_strarray_free(&p->arch.tags);
+    now_strarray_free(&p->arch.alias_keys);
+    now_strarray_free(&p->arch.alias_values);
     if (p->_pasta_root)
         pasta_free((PastaValue *)p->_pasta_root);
     free(p);
@@ -713,6 +752,9 @@ NOW_API NowProject *now_project_load(const char *path, NowResult *result) {
         load_strarray(&p->java.classpath, pasta_map_get(java_map, "classpath"));
     }
 
+    /* Platform tag dictionary (§11.x) */
+    load_arch(&p->arch, pasta_map_get(root, "arch"));
+
     apply_maven_defaults(p);
 
     if (result) {
@@ -800,6 +842,9 @@ NOW_API NowProject *now_project_load_string(const char *input, size_t len,
             load_strarray(&p->java.classpath, pasta_map_get(java_map, "classpath"));
         }
     }
+
+    /* Platform tag dictionary (§11.x) */
+    load_arch(&p->arch, pasta_map_get(root, "arch"));
 
     apply_maven_defaults(p);
 
