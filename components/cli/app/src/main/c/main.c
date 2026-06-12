@@ -211,6 +211,9 @@ static void usage(void) {
         "  --locked        Fail if lock file is inconsistent\n"
         "  --offline       No network access\n"
         "  --target TRIPLE Target platform triple (os:arch:variant)\n"
+        "  --platform-tag T Add an extra platform tag (repeatable; e.g.\n"
+        "                  --platform-tag os4 for sub-platforms invisible\n"
+        "                  in the triple)\n"
         "  --tui           Live progress display\n"
         "  --timing        Print wall-clock per build phase\n"
         "  --no-color      Disable ANSI colors\n"
@@ -247,6 +250,11 @@ int main(int argc, char *argv[]) {
     int flag_no_color = 0;
     int flag_tui = 0;
     const char *target_str = NULL;
+    /* --platform-tag NAME — repeatable; sub-platform tokens the triple
+     * can't carry (e.g. "os4" under amiga). Storage is heap-allocated
+     * lazily; freed by now_build_set_default_target on next call. */
+    const char *ptag_buf[32];
+    size_t      ptag_count = 0;
 
     /* Check for flags in remaining args */
     for (int i = 2; i < argc; i++) {
@@ -272,6 +280,12 @@ int main(int argc, char *argv[]) {
             now_timing_set(1);
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
             target_str = argv[++i];
+        else if (strcmp(argv[i], "--platform-tag") == 0 && i + 1 < argc) {
+            if (ptag_count < sizeof(ptag_buf) / sizeof(ptag_buf[0]))
+                ptag_buf[ptag_count++] = argv[++i];
+            else
+                i++;  /* silently drop past the cap of 32 */
+        }
         else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
             jobs = atoi(argv[++i]);
             if (jobs < 1) jobs = 1;
@@ -282,10 +296,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* TODO: --target triple parsing is done but not yet wired into the build.
-     * Cross-compilation support is still experimental — accept the flag but
-     * silence the unused-variable warning until we plumb it through. */
-    (void)target_str;
+    /* Thread --target / --platform-tag into the build via the
+     * default-target stash. now_build_init() picks them up and feeds
+     * the active tag set that drives source-discovery's platform gate. */
+    if (target_str || ptag_count > 0)
+        now_build_set_default_target(target_str, ptag_buf, ptag_count);
 
     /* Handle version and help */
     if (strcmp(phase, "version") == 0 || strcmp(phase, "--version") == 0) {

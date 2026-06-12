@@ -1109,6 +1109,15 @@ static void resolve_top_parallel(NowBuildCtx *ctx, const char *basedir,
     free(jobs);
 }
 
+/* Default-target stash — written by the CLI (or any caller) via
+ * now_build_set_default_target before high-level entry points run,
+ * read here by now_build_init so --target / --platform-tag take
+ * effect without changing public signatures. */
+static NowTriple   g_default_target;
+static int         g_default_target_set = 0;
+static char      **g_default_tags;
+static size_t      g_default_tag_count;
+
 NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
                    const char *basedir, NowResult *result) {
     memset(ctx, 0, sizeof(*ctx));
@@ -1126,15 +1135,22 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     now_lang_registry_init();
     now_toolchain_resolve(&ctx->toolchain, project);
 
-    /* Target triple defaults to host. Cross-compiles re-bind it via
-     * now_build_set_target() before compile_phase runs. The active tag
+    /* Target triple defaults to host, or to whatever the CLI stashed
+     * via now_build_set_default_target. Cross-compiles can still
+     * rebind via now_build_set_target() after init. The active tag
      * set drives the path-based platform gate in source discovery —
      * no-op for projects without an arch.tags dictionary. */
     {
-        const NowTriple *host = now_host_triple_parsed();
-        if (host) ctx->target = *host;
+        if (g_default_target_set) {
+            ctx->target = g_default_target;
+        } else {
+            const NowTriple *host = now_host_triple_parsed();
+            if (host) ctx->target = *host;
+        }
         now_tagset_init(&ctx->active_tags);
-        now_arch_active_tags(&ctx->target, project, NULL, 0, &ctx->active_tags);
+        now_arch_active_tags(&ctx->target, project,
+                              (const char *const *)g_default_tags,
+                              g_default_tag_count, &ctx->active_tags);
     }
 
     /* Load dirwalk cache — lets resolve_modules/now_discover_sources skip
@@ -4350,4 +4366,36 @@ NOW_API void now_build_set_target(NowBuildCtx *ctx, const NowTriple *target,
     now_tagset_free(&ctx->active_tags);
     now_arch_active_tags(&ctx->target, ctx->project, user_tags, user_count,
                           &ctx->active_tags);
+}
+
+/* (statics live above now_build_init so it can read them.) */
+
+static void clear_default_tags(void) {
+    for (size_t i = 0; i < g_default_tag_count; i++) free(g_default_tags[i]);
+    free(g_default_tags);
+    g_default_tags = NULL;
+    g_default_tag_count = 0;
+}
+
+NOW_API void now_build_set_default_target(const char *triple,
+                                           const char *const *tags,
+                                           size_t tag_count) {
+    if (triple && *triple) {
+        now_triple_parse(&g_default_target, triple);
+        now_triple_fill_from_host(&g_default_target);
+        g_default_target_set = 1;
+    } else {
+        memset(&g_default_target, 0, sizeof(g_default_target));
+        g_default_target_set = 0;
+    }
+    clear_default_tags();
+    if (tags && tag_count) {
+        g_default_tags = (char **)calloc(tag_count, sizeof(char *));
+        if (g_default_tags) {
+            for (size_t i = 0; i < tag_count; i++) {
+                g_default_tags[i] = tags[i] ? strdup(tags[i]) : NULL;
+            }
+            g_default_tag_count = tag_count;
+        }
+    }
 }

@@ -117,6 +117,16 @@ NOW_API void now_build_set_target(NowBuildCtx *ctx, const NowTriple *target,
                                    const char *const *user_tags,
                                    size_t user_count);
 
+/* Stash a default target triple + extra platform tags that
+ * now_build_init() picks up automatically. Lets the CLI thread
+ * --target / --platform-tag through high-level entry points like
+ * now_build()/now_compile() without changing their signatures.
+ * Pass triple=NULL to fall back to host. tags+tag_count are copied;
+ * pass NULL/0 to clear any prior tags. */
+NOW_API void now_build_set_default_target(const char *triple,
+                                           const char *const *tags,
+                                           size_t tag_count);
+
 /* Generate compile_commands.json at project root.
  * Returns the number of entries written, or -1 on error. */
 NOW_API int now_compile_db(const NowProject *project, const char *basedir,
