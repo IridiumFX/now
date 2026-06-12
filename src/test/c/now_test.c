@@ -3635,6 +3635,75 @@ static void test_arch_gate_nested_and(void) {
     PASS();
 }
 
+static void test_arch_gate_in_build_loop(void) {
+    TEST("arch: build loop's compile phase applies the gate");
+
+    /* Synthesize a tiny project with arch.tags declared and three .c
+     * files: one ungated, one under c/<host_os>/, one under c/<other>/.
+     * After now_build_init, ctx->sources should contain the ungated +
+     * the host-gated file, but not the other-gated file. */
+    const NowTriple *host = now_host_triple_parsed();
+    if (!host || !host->os[0]) { FAIL("no host triple"); return; }
+
+    /* Pick a tag we KNOW isn't the host's os tag for the negative case. */
+    const char *other_os =
+        (strcmp(host->os, "linux") != 0) ? "linux" :
+        (strcmp(host->os, "macos") != 0) ? "macos" : "windows";
+
+    char root[512];
+    snprintf(root, sizeof(root), "%s/arch_build", NOW_TEST_RESOURCES);
+    now_mkdir_p(root);
+
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/src/main/c", root); now_mkdir_p(dir);
+    snprintf(dir, sizeof(dir), "%s/src/main/c/%s", root, host->os); now_mkdir_p(dir);
+    snprintf(dir, sizeof(dir), "%s/src/main/c/%s", root, other_os); now_mkdir_p(dir);
+
+    char p[512];
+    snprintf(p, sizeof(p), "%s/src/main/c/common.c", root); write_empty(p);
+    snprintf(p, sizeof(p), "%s/src/main/c/%s/host_only.c", root, host->os);
+    write_empty(p);
+    snprintf(p, sizeof(p), "%s/src/main/c/%s/other_only.c", root, other_os);
+    write_empty(p);
+
+    /* Project pasta with arch.tags listing both host and other os.
+     * The exact triple tags need to be in the dict to be treated as
+     * gates; the active set is derived from the host triple inside
+     * now_build_init. */
+    char pasta[1024];
+    snprintf(pasta, sizeof(pasta),
+        "{ group: \"org.test\", artifact: \"archbuild\", version: \"1\","
+        "  langs: [\"c\"],"
+        "  output: { type: \"static\", name: \"archbuild\" },"
+        "  arch: { tags: [\"%s\", \"%s\"] } }",
+        host->os, other_os);
+
+    NowResult res;
+    NowProject *prj = now_project_load_string(pasta, strlen(pasta), &res);
+    ASSERT_NOT_NULL(prj);
+
+    NowBuildCtx ctx;
+    int rc = now_build_init(&ctx, prj, root, &res);
+    if (rc != 0) { FAIL(res.message); now_project_free(prj); return; }
+
+    /* Inspect the discovered sources before linking — the gate runs
+     * in now_build_init's discovery pass. */
+    int has_common = 0, has_host = 0, has_other = 0;
+    for (size_t i = 0; i < ctx.sources.count; i++) {
+        const char *path = ctx.sources.paths[i];
+        if (strstr(path, "common.c")) has_common = 1;
+        if (strstr(path, "host_only.c")) has_host = 1;
+        if (strstr(path, "other_only.c")) has_other = 1;
+    }
+    ASSERT_EQ(has_common, 1);
+    ASSERT_EQ(has_host, 1);
+    ASSERT_EQ(has_other, 0);
+
+    now_build_free(&ctx);
+    now_project_free(prj);
+    PASS();
+}
+
 static void test_arch_gate_empty_dict_is_passthrough(void) {
     TEST("arch: empty dict = no gating, same as unfiltered walk");
     char root[512];
@@ -6710,6 +6779,7 @@ int main(void) {
     test_arch_gate_skips_nonmatching();
     test_arch_gate_nested_and();
     test_arch_gate_empty_dict_is_passthrough();
+    test_arch_gate_in_build_loop();
 
     printf("\n  C++20 Modules:\n");
     test_module_scan_interface();

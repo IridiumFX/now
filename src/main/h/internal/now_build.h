@@ -10,6 +10,7 @@
 #include "now.h"
 #include "now_fs.h"
 #include "now_lang.h"
+#include "now_arch.h"
 
 /* Resolved toolchain — concrete paths to tools */
 typedef struct {
@@ -76,6 +77,14 @@ typedef struct {
      * skip a redundant manifest load. Owned by compile; lives until
      * now_build_free. */
     char             *last_link_flags_hash;
+
+    /* Target triple (host by default; overridable by callers before
+     * now_build_init) and derived active tag set used to gate
+     * source-discovery walks against project->arch.tags. Caller may
+     * also append to active_tags before init for sub-platform tokens
+     * the triple can't carry (e.g. amiga/os4). */
+    NowTriple         target;
+    NowTagSet         active_tags;
 } NowBuildCtx;
 
 /* Initialize the build context and discover sources.
@@ -98,6 +107,15 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result);
 
 /* Clean up build context. */
 NOW_API void now_build_free(NowBuildCtx *ctx);
+
+/* Rebind the build's target triple and recompute the active tag set
+ * (used by source-discovery's platform gate). Call after
+ * now_build_init() but before compile_phase. Passing user_tags=NULL,
+ * user_count=0 just rebases the triple. target=NULL keeps the current
+ * triple and only swaps user_tags. */
+NOW_API void now_build_set_target(NowBuildCtx *ctx, const NowTriple *target,
+                                   const char *const *user_tags,
+                                   size_t user_count);
 
 /* Generate compile_commands.json at project root.
  * Returns the number of entries written, or -1 on error. */

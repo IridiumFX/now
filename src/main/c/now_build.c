@@ -1126,6 +1126,17 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     now_lang_registry_init();
     now_toolchain_resolve(&ctx->toolchain, project);
 
+    /* Target triple defaults to host. Cross-compiles re-bind it via
+     * now_build_set_target() before compile_phase runs. The active tag
+     * set drives the path-based platform gate in source discovery —
+     * no-op for projects without an arch.tags dictionary. */
+    {
+        const NowTriple *host = now_host_triple_parsed();
+        if (host) ctx->target = *host;
+        now_tagset_init(&ctx->active_tags);
+        now_arch_active_tags(&ctx->target, project, NULL, 0, &ctx->active_tags);
+    }
+
     /* Load dirwalk cache — lets resolve_modules/now_discover_sources skip
      * readdir() on directories whose mtime hasn't changed. Cache lives
      * under ~/.now/dirwalk/ so it survives `now clean` wiping target/. */
@@ -1184,7 +1195,9 @@ NOW_API int now_build_init(NowBuildCtx *ctx, const NowProject *project,
     int is_header_only = (project->output.type &&
                           strcmp(project->output.type, "header-only") == 0);
 
-    int rc = now_discover_sources(basedir, src_dir, exts, &ctx->sources);
+    int rc = now_discover_sources_filtered(basedir, src_dir, exts,
+                                             project, &ctx->active_tags,
+                                             &ctx->sources);
 
     if (rc != 0 && !is_header_only) {
         free(exts);
@@ -2112,7 +2125,9 @@ static int build_java_test(NowBuildCtx *ctx, NowResult *result) {
     NowFileList test_sources;
     memset(&test_sources, 0, sizeof(test_sources));
     const char *java_exts[] = { ".java", NULL };
-    now_discover_sources(ctx->basedir, test_dir_rel, java_exts, &test_sources);
+    now_discover_sources_filtered(ctx->basedir, test_dir_rel, java_exts,
+                                    ctx->project, &ctx->active_tags,
+                                    &test_sources);
 
     size_t java_test_count = 0;
     for (size_t i = 0; i < test_sources.count; i++) {
@@ -3531,7 +3546,9 @@ NOW_API int now_build_test(NowBuildCtx *ctx, NowResult *result) {
 
     NowFileList test_sources;
     now_filelist_init(&test_sources);
-    int rc = now_discover_sources(basedir, test_dir, exts, &test_sources);
+    int rc = now_discover_sources_filtered(basedir, test_dir, exts,
+                                            ctx->project, &ctx->active_tags,
+                                            &test_sources);
     free(exts);
 
     if (rc != 0 || test_sources.count == 0) {
@@ -4321,5 +4338,16 @@ NOW_API void now_build_free(NowBuildCtx *ctx) {
     now_filelist_free(&ctx->dep_libs);
     now_filelist_free(&ctx->dep_lib_dirs_raw);
     now_stat_cache_free(&ctx->stat_cache);
+    now_tagset_free(&ctx->active_tags);
     free(ctx->last_link_flags_hash);
+}
+
+NOW_API void now_build_set_target(NowBuildCtx *ctx, const NowTriple *target,
+                                   const char *const *user_tags,
+                                   size_t user_count) {
+    if (!ctx) return;
+    if (target) ctx->target = *target;
+    now_tagset_free(&ctx->active_tags);
+    now_arch_active_tags(&ctx->target, ctx->project, user_tags, user_count,
+                          &ctx->active_tags);
 }
