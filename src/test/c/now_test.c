@@ -4,9 +4,11 @@
 #include <sys/stat.h>
 #ifdef _WIN32
   #include <direct.h>
+  #include <windows.h>
   #define rmdir _rmdir
 #else
   #include <unistd.h>
+  #include <dirent.h>
 #endif
 #include "now.h"
 #include "pasta.h"
@@ -3541,6 +3543,48 @@ static int write_empty(const char *path) {
     return 0;
 }
 
+/* Best-effort recursive directory removal — used to clean synthetic
+ * test trees so files from a prior run (or a different host's layout)
+ * can't leak into discovery. Silently ignores a missing path. */
+static void rmtree_best_effort(const char *path) {
+#ifdef _WIN32
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        char child[1024];
+        snprintf(child, sizeof(child), "%s\\%s", path, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            rmtree_best_effort(child);
+        else
+            remove(child);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    _rmdir(path);
+#else
+    DIR *d = opendir(path);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        char child[1024];
+        snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (stat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            rmtree_best_effort(child);
+        else
+            remove(child);
+    }
+    closedir(d);
+    rmdir(path);
+#endif
+}
+
 static int build_arch_tree(const char *root) {
     char p[512];
     snprintf(p, sizeof(p), "%s/c", root); now_mkdir_p(p);
@@ -3638,66 +3682,65 @@ static void test_arch_gate_nested_and(void) {
 static void test_arch_gate_in_build_loop(void) {
     TEST("arch: build loop's compile phase applies the gate");
 
-    /* Synthesize a tiny project with arch.tags declared and three .c
-     * files: one ungated, one under c/<host_os>/, one under c/<other>/.
-     * After now_build_init, ctx->sources should contain the ungated +
-     * the host-gated file, but not the other-gated file. */
-    const NowTriple *host = now_host_triple_parsed();
-    if (!host || !host->os[0]) { FAIL("no host triple"); return; }
-
-    /* Pick a tag we KNOW isn't the host's os tag for the negative case. */
-    const char *other_os =
-        (strcmp(host->os, "linux") != 0) ? "linux" :
-        (strcmp(host->os, "macos") != 0) ? "macos" : "windows";
-
+    /* Host-independent by construction: two synthetic gate tags,
+     * "gizmo" (made active) and "widget" (left inactive), so the
+     * result doesn't depend on which OS the runner is. The active set
+     * is fed through now_build_set_default_target — the same stash the
+     * CLI's --platform-tag uses — and picked up by now_build_init's
+     * discovery pass. */
     char root[512];
     snprintf(root, sizeof(root), "%s/arch_build", NOW_TEST_RESOURCES);
-    now_mkdir_p(root);
+
+    /* Clean any prior tree so stale files from earlier runs (or a
+     * different host's layout) can't leak into discovery. */
+    char csrc[512];
+    snprintf(csrc, sizeof(csrc), "%s/src/main/c", root);
+    rmtree_best_effort(csrc);
 
     char dir[512];
-    snprintf(dir, sizeof(dir), "%s/src/main/c", root); now_mkdir_p(dir);
-    snprintf(dir, sizeof(dir), "%s/src/main/c/%s", root, host->os); now_mkdir_p(dir);
-    snprintf(dir, sizeof(dir), "%s/src/main/c/%s", root, other_os); now_mkdir_p(dir);
+    now_mkdir_p(csrc);
+    snprintf(dir, sizeof(dir), "%s/src/main/c/gizmo", root);  now_mkdir_p(dir);
+    snprintf(dir, sizeof(dir), "%s/src/main/c/widget", root); now_mkdir_p(dir);
 
     char p[512];
-    snprintf(p, sizeof(p), "%s/src/main/c/common.c", root); write_empty(p);
-    snprintf(p, sizeof(p), "%s/src/main/c/%s/host_only.c", root, host->os);
-    write_empty(p);
-    snprintf(p, sizeof(p), "%s/src/main/c/%s/other_only.c", root, other_os);
-    write_empty(p);
+    snprintf(p, sizeof(p), "%s/src/main/c/common.c", root);        write_empty(p);
+    snprintf(p, sizeof(p), "%s/src/main/c/gizmo/gizmo_only.c", root);   write_empty(p);
+    snprintf(p, sizeof(p), "%s/src/main/c/widget/widget_only.c", root); write_empty(p);
 
-    /* Project pasta with arch.tags listing both host and other os.
-     * The exact triple tags need to be in the dict to be treated as
-     * gates; the active set is derived from the host triple inside
-     * now_build_init. */
     char pasta[1024];
     snprintf(pasta, sizeof(pasta),
         "{ group: \"org.test\", artifact: \"archbuild\", version: \"1\","
         "  langs: [\"c\"],"
         "  output: { type: \"static\", name: \"archbuild\" },"
-        "  arch: { tags: [\"%s\", \"%s\"] } }",
-        host->os, other_os);
+        "  arch: { tags: [\"gizmo\", \"widget\"] } }");
 
     NowResult res;
     NowProject *prj = now_project_load_string(pasta, strlen(pasta), &res);
     ASSERT_NOT_NULL(prj);
 
+    /* Activate only "gizmo" via the default-target stash (triple=NULL
+     * → host triple; the extra tag rides on top). */
+    const char *active_tag[] = { "gizmo" };
+    now_build_set_default_target(NULL, active_tag, 1);
+
     NowBuildCtx ctx;
     int rc = now_build_init(&ctx, prj, root, &res);
+    /* Reset the stash immediately so it can't bleed into other tests. */
+    now_build_set_default_target(NULL, NULL, 0);
     if (rc != 0) { FAIL(res.message); now_project_free(prj); return; }
 
     /* Inspect the discovered sources before linking — the gate runs
      * in now_build_init's discovery pass. */
-    int has_common = 0, has_host = 0, has_other = 0;
+    int has_common = 0, has_gizmo = 0, has_widget = 0;
     for (size_t i = 0; i < ctx.sources.count; i++) {
         const char *path = ctx.sources.paths[i];
-        if (strstr(path, "common.c")) has_common = 1;
-        if (strstr(path, "host_only.c")) has_host = 1;
-        if (strstr(path, "other_only.c")) has_other = 1;
+        if (strstr(path, "common.c"))      has_common = 1;
+        if (strstr(path, "gizmo_only.c"))  has_gizmo = 1;
+        if (strstr(path, "widget_only.c")) has_widget = 1;
     }
     ASSERT_EQ(has_common, 1);
-    ASSERT_EQ(has_host, 1);
-    ASSERT_EQ(has_other, 0);
+    ASSERT_EQ(has_gizmo, 1);   /* gizmo active → included */
+    ASSERT_EQ(has_widget, 0);  /* widget inactive → gated out */
 
     now_build_free(&ctx);
     now_project_free(prj);

@@ -155,6 +155,17 @@ if(WIN32)
     target_link_libraries(now PRIVATE bcrypt)
 endif()
 
+# Threads. now_build / now_manifest call pthread_create directly. On
+# modern glibc (2.34+) libpthread is folded into libc so it links with
+# no flag, and Windows uses its own threading — but FreeBSD keeps
+# pthreads in libthr and needs an explicit -pthread at link time.
+# Link PUBLIC so the flag propagates to now_cli / now_test when now is
+# built static (the failing case: libnow.a). Threads::Threads is a
+# no-op on platforms that don't need it.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(now PUBLIC Threads::Threads)
+
 
 if(BUILD_SHARED_LIBS)
     target_compile_definitions(now PRIVATE NOW_BUILDING PICO_HTTP_BUILDING ALF_BUILDING BASTA_BUILDING APENNINES_STATIC)

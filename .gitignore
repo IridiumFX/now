@@ -13,3 +13,9 @@ local/
 CMakeUserPresets.json
 target/
 .cache/
+
+# Synthetic source trees generated at runtime by the arch-gating tests.
+# Regenerated on every run; committing them caused host-dependent
+# layout collisions across platforms.
+src/test/resources/arch_tree/
+src/test/resources/arch_build/

@@ -67,6 +67,15 @@ jobs:
           fi
         shell: bash
 
+  # NOTE: downstream projects (apennines, gut, cookbook, lab) no longer
+  # build here. Coupling now's CI to their buildability put their
+  # regressions on now's dashboard — wrong direction. Instead each
+  # downstream owns its own CI and pulls now in via the reusable
+  # building blocks this repo publishes:
+  #   - composite action:   .github/actions/setup-now
+  #   - reusable workflow:   .github/workflows/now-build.yml
+  # See docs/ci-downstream.md for the two-line downstream setup.
+
   freebsd:
     runs-on: ubuntu-latest
     # Caveated platform — vmactions FreeBSD VM, prone to environment

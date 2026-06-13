@@ -30,11 +30,24 @@
   compile: {
     warnings: ["Wall", "Wextra"],
     includes: ["lib/basta/src/main/h", "lib/basta/src/main/c"],
-    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"]
+    defines:  ["NOW_STATIC", "PICO_HTTP_STATIC", "ALF_STATIC", "BASTA_STATIC", "APENNINES_STATIC"],
+
+    // glibc hides clock_gettime, strdup, setenv, realpath, struct
+    // timespec st_mtim, etc. behind these under strict -std=c11.
+    // _DEFAULT_SOURCE re-enables BSD-isms (usleep, useconds_t).
+    // macOS/BSD expose them by default (and use st_mtimespec), so
+    // these are Linux-only — mirrors CMakeLists.txt.
+    linux: {
+      defines: ["_POSIX_C_SOURCE=200809L", "_DEFAULT_SOURCE"]
+    }
   },
 
   link: {
-    libs: ["ws2_32", "bcrypt"]
+    // ws2_32 (Winsock) + bcrypt (CNG) are Windows-only. pthreads live
+    // in libc on modern glibc and on macOS, but FreeBSD keeps them in
+    // libthr — -pthread covers all POSIX targets harmlessly.
+    windows: { libs: ["ws2_32", "bcrypt"] },
+    posix:   { flags: ["-pthread"] }
   },
 
   profiles: {

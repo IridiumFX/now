@@ -1,0 +1,80 @@
+name: now build (reusable)
+
+# Reusable workflow that builds (and optionally tests) a now-based
+# project across the standard runner matrix. Downstream repos call it
+# instead of hand-rolling CI:
+#
+#   # .github/workflows/ci.yml in a downstream repo
+#   name: CI
+#   on: [push, pull_request]
+#   jobs:
+#     build:
+#       uses: IridiumFX/now/.github/workflows/now-build.yml@main
+#
+# Override the defaults as needed — e.g. pin a released now, run tests,
+# or trim the OS list:
+#
+#     build:
+#       uses: IridiumFX/now/.github/workflows/now-build.yml@main
+#       with:
+#         now-version: v1.0.0-rc2
+#         test-cmd: now test
+#         runners: '["ubuntu-latest", "windows-latest"]'
+
+on:
+  workflow_call:
+    inputs:
+      now-version:
+        description: now release tag to download, or "source" to build from now-ref.
+        type: string
+        default: source
+      now-ref:
+        description: now git ref to build from when now-version == source.
+        type: string
+        default: main
+      build-cmd:
+        description: Command that builds the downstream project.
+        type: string
+        default: now build
+      test-cmd:
+        description: Optional test command. Empty string skips the test step.
+        type: string
+        default: ''
+      runners:
+        description: JSON array of runner labels to matrix over.
+        type: string
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+      working-directory:
+        description: Directory to run the build/test commands in.
+        type: string
+        default: '.'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.runners) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup now
+        uses: IridiumFX/now/.github/actions/setup-now@main
+        with:
+          version: ${{ inputs.now-version }}
+          ref: ${{ inputs.now-ref }}
+
+      - name: Build
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-cmd }}
+
+      - name: Test
+        if: inputs.test-cmd != ''
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-cmd }}

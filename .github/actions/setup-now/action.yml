@@ -1,0 +1,80 @@
+name: Setup now
+description: >
+  Install the now build tool and add it to PATH. Downloads a prebuilt
+  release binary for the runner OS, or builds from source when tracking
+  a branch. Mirrors the setup-node / setup-go pattern.
+
+inputs:
+  version:
+    description: >
+      Which now to install. A release tag (e.g. "v1.0.0-rc2") downloads
+      the prebuilt binary for the runner OS. The literal "source" builds
+      now from the `ref` input instead. Default: source (tracks main).
+    required: false
+    default: source
+  ref:
+    description: >
+      now git ref (branch, tag, or SHA) to build from when
+      version == source. Ignored for release downloads.
+    required: false
+    default: main
+  repository:
+    description: now repository, in owner/name form.
+    required: false
+    default: IridiumFX/now
+
+runs:
+  using: composite
+  steps:
+    # ---- Release-binary path (fast: no compiler needed) ----
+    - name: Download release binary
+      if: inputs.version != 'source'
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ runner.os }}" in
+          Linux)   asset=now-linux-x64;   bin=now ;;
+          macOS)   asset=now-macos-arm64; bin=now ;;
+          Windows) asset=now-windows-x64.exe; bin=now.exe ;;
+          *) echo "::error::setup-now: unsupported runner OS ${{ runner.os }}"; exit 1 ;;
+        esac
+        dest="$HOME/.now-bin"
+        mkdir -p "$dest"
+        url="https://github.com/${{ inputs.repository }}/releases/download/${{ inputs.version }}/$asset"
+        echo "setup-now: downloading $url"
+        curl -fsSL "$url" -o "$dest/$bin"
+        chmod +x "$dest/$bin" || true
+        echo "$dest" >> "$GITHUB_PATH"
+
+    # ---- Source-build path (robust: tracks any ref) ----
+    - name: Checkout now source
+      if: inputs.version == 'source'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        submodules: recursive
+        path: .now-src
+
+    - name: Build now from source
+      if: inputs.version == 'source'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd .now-src
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          # MinGW gcc, not MSVC — apennines uses #ifdef inside
+          # function-like macro args, which MSVC's preprocessor rejects.
+          cmake -B build -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_SH=CMAKE_SH-NOTFOUND
+        else
+          cmake -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+        fi
+        cmake --build build -j --target now_cli
+        echo "$PWD/build/bin" >> "$GITHUB_PATH"
+
+    - name: Verify now is on PATH
+      shell: bash
+      run: now version
